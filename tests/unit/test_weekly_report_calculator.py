@@ -1,7 +1,7 @@
 """
-WeeklyReportCalculator 단위 테스트 (Task 1-1)
+WeeklyReportCalculator 단위 테스트 (Task 1-1 + Task 1-2)
 
-Mock Excel 데이터를 메모리에서 생성하여 로직 1~4를 검증한다.
+Mock Excel 데이터를 메모리에서 생성하여 로직 1~5를 검증한다.
 
 테스트 케이스 목록:
     [로직 1] 파일 통합
@@ -25,10 +25,20 @@ Mock Excel 데이터를 메모리에서 생성하여 로직 1~4를 검증한다.
 
     [로직 4] 텍스트 추출
         test_14_text_extraction_branching   - T없음+P있음/없음, T있음+Z있음/없음
+
+    [로직 5] Gemini 윤문 (Task 1-2)
+        test_15_gemini_refines_records          - 정상 응답 → refined 필드 반영
+        test_16_gemini_fallback_on_all_failures - 3회 모두 실패 → original 유지
+        test_17_gemini_retry_then_succeed       - 1회 실패 후 성공 → refined 필드 반영
+        test_18_gemini_invalid_json_fallback    - 잘못된 JSON → original 유지
+        test_19_gemini_skipped_when_no_api_key  - API 키 없을 때 → refined 필드 None
+        test_20_gemini_empty_records_no_call    - 빈 레코드 → API 호출 없음
 """
 
 import io
+import json
 from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import openpyxl
 import pandas as pd
@@ -533,3 +543,174 @@ def test_get_week_range_friday_input():
     monday, friday = calc._get_week_range("2026-03-06")  # 금요일
     assert monday == date(2026, 3, 2)
     assert friday == date(2026, 3, 6)
+
+
+# ====================
+# 로직 5: Gemini 윤문 (Task 1-2)
+# ====================
+
+# Gemini 배치 응답 JSON 샘플 (test_15, test_17에서 공통 사용)
+GEMINI_BATCH_RESPONSE = json.dumps(
+    [
+        {
+            "id": 0,
+            "refined_title": "윤문된 제목",
+            "refined_overview": "윤문된 개요",
+            "refined_content": "윤문된 내용",
+        }
+    ],
+    ensure_ascii=False,
+)
+
+
+def _make_calculator_with_mock_model(mock_model) -> WeeklyReportCalculator:
+    """Mock Gemini 모델이 주입된 WeeklyReportCalculator를 반환한다."""
+    calc = WeeklyReportCalculator.__new__(WeeklyReportCalculator)
+    calc._gemini_model = mock_model
+    return calc
+
+
+@pytest.mark.asyncio
+async def test_15_gemini_refines_records():
+    """Gemini 정상 응답 시 refined 필드 3개가 레코드에 반영된다."""
+    mock_response = MagicMock()
+    mock_response.text = GEMINI_BATCH_RESPONSE
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock(return_value=mock_response)
+
+    calc = _make_calculator_with_mock_model(mock_model)
+
+    row = epro_row({COL_G: "제목 원본", COL_H: "요구사항 원본", COL_P: IN_RANGE_DATE, COL_R: "처리 원본"})
+    inp = make_calculator_input([row], [])
+
+    # calculate() 호출 시 _init_gemini는 이미 Mock으로 대체됐으므로 직접 호출
+    result = await calc.calculate(inp)
+
+    assert len(result.records) == 1
+    r = result.records[0]
+    assert r.refined_title == "윤문된 제목", "refined_title이 반영되어야 함"
+    assert r.refined_overview == "윤문된 개요", "refined_overview가 반영되어야 함"
+    assert r.refined_content == "윤문된 내용", "refined_content가 반영되어야 함"
+    # 원본 필드는 유지
+    assert r.title == "제목 원본"
+    assert r.requirements == "요구사항 원본"
+
+
+@pytest.mark.asyncio
+async def test_16_gemini_fallback_on_all_failures():
+    """Gemini API가 3회 모두 실패하면 원본 텍스트를 유지하고 refined 필드는 None이다."""
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock(
+        side_effect=Exception("API 오류")
+    )
+
+    calc = _make_calculator_with_mock_model(mock_model)
+
+    row = epro_row({COL_G: "원본 제목", COL_H: "원본 요구사항"})
+    inp = make_calculator_input([row], [])
+
+    # asyncio.sleep을 mock으로 대체하여 테스트 속도 향상
+    with patch("server.app.domain.weekly_report.calculator.asyncio.sleep", new_callable=AsyncMock):
+        result = await calc.calculate(inp)
+
+    assert len(result.records) == 1
+    r = result.records[0]
+    # refined 필드는 None (원본 유지)
+    assert r.refined_title is None
+    assert r.refined_overview is None
+    assert r.refined_content is None
+    # 원본 필드는 그대로
+    assert r.title == "원본 제목"
+    assert r.requirements == "원본 요구사항"
+    # 3회 호출 시도 확인 (최초 1회 + 재시도 2회)
+    assert mock_model.generate_content_async.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_17_gemini_retry_then_succeed():
+    """Gemini API가 1회 실패 후 2회째에 성공하면 refined 필드가 반영된다."""
+    mock_response = MagicMock()
+    mock_response.text = GEMINI_BATCH_RESPONSE
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock(
+        side_effect=[Exception("첫 번째 실패"), mock_response]
+    )
+
+    calc = _make_calculator_with_mock_model(mock_model)
+
+    row = epro_row({COL_P: IN_RANGE_DATE})
+    inp = make_calculator_input([row], [])
+
+    with patch("server.app.domain.weekly_report.calculator.asyncio.sleep", new_callable=AsyncMock):
+        result = await calc.calculate(inp)
+
+    assert len(result.records) == 1
+    r = result.records[0]
+    assert r.refined_title == "윤문된 제목", "재시도 성공 후 refined_title이 반영되어야 함"
+    assert mock_model.generate_content_async.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_18_gemini_invalid_json_fallback():
+    """Gemini 응답이 유효하지 않은 JSON이면 원본 텍스트를 유지한다."""
+    mock_response = MagicMock()
+    mock_response.text = "이것은 JSON이 아닙니다. { invalid json }"
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock(return_value=mock_response)
+
+    calc = _make_calculator_with_mock_model(mock_model)
+
+    row = epro_row({COL_G: "원본 제목", COL_H: "원본 요구사항"})
+    inp = make_calculator_input([row], [])
+
+    result = await calc.calculate(inp)
+
+    assert len(result.records) == 1
+    r = result.records[0]
+    assert r.refined_title is None, "파싱 실패 시 refined_title은 None이어야 함"
+    assert r.refined_overview is None
+    assert r.refined_content is None
+    assert r.title == "원본 제목", "원본 필드는 유지되어야 함"
+
+
+@pytest.mark.asyncio
+async def test_19_gemini_skipped_when_no_api_key():
+    """GEMINI_API_KEY가 없으면 Gemini 모델이 None이며 윤문을 건너뛴다."""
+    with patch("server.app.domain.weekly_report.calculator.settings") as mock_settings:
+        mock_settings.GEMINI_API_KEY = ""
+        calc = WeeklyReportCalculator()
+
+    assert calc._gemini_model is None, "API 키 없으면 _gemini_model은 None이어야 함"
+
+    row = epro_row({COL_G: "원본 제목", COL_H: "원본 요구사항"})
+    inp = make_calculator_input([row], [])
+
+    result = await calc.calculate(inp)
+
+    assert len(result.records) == 1
+    r = result.records[0]
+    # Gemini 미사용이므로 refined 필드는 None
+    assert r.refined_title is None
+    assert r.refined_overview is None
+    assert r.refined_content is None
+
+
+@pytest.mark.asyncio
+async def test_20_gemini_empty_records_no_call():
+    """레코드가 없을 때 Gemini API를 호출하지 않는다."""
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock()
+
+    calc = _make_calculator_with_mock_model(mock_model)
+
+    # 필터링 후 레코드가 0개가 되도록 e-Procurement 미포함 행
+    row = build_row({COL_F: NON_EPRO, COL_W: NON_EPRO})
+    inp = make_calculator_input([row], [])
+
+    result = await calc.calculate(inp)
+
+    assert result.records == []
+    mock_model.generate_content_async.assert_not_called()
