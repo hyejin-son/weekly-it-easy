@@ -5,22 +5,26 @@
  */
 
 import { apiClient } from '@/core/api';
-import type { WeeklyReportFiles } from './types';
+import type { WeeklyReportFiles, WeeklyReportRecord } from './types';
 
-interface WeeklyReportApiResponse {
+interface ExtractApiResponse {
+  records: WeeklyReportRecord[];
+}
+
+interface GenerateApiResponse {
   result_text: string;
 }
 
 /**
- * 주간보고 생성
+ * Step 1: 주간보고 데이터 추출 (AI 없음)
  *
  * multipart/form-data로 report_date와 4개의 Excel 파일을 전송하고
- * 포맷팅된 주간보고 텍스트를 반환합니다.
+ * 파싱·필터링된 레코드 배열을 반환합니다.
  */
-export async function generateWeeklyReport(
+export async function extractWeeklyReport(
   reportDate: string,
   files: WeeklyReportFiles
-): Promise<string> {
+): Promise<WeeklyReportRecord[]> {
   const formData = new FormData();
   formData.append('report_date', reportDate);
 
@@ -30,11 +34,33 @@ export async function generateWeeklyReport(
   if (files.file_cd_1 !== null) formData.append('file_cd_1', files.file_cd_1);
   if (files.file_cd_2 !== null) formData.append('file_cd_2', files.file_cd_2);
 
-  const response = await apiClient.post<WeeklyReportApiResponse>(
-    '/v1/weekly-report/generate',
+  const response = await apiClient.post<ExtractApiResponse>(
+    '/v1/weekly-report/extract',
     formData,
     {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 30000, // AI 없이 순수 파싱만이므로 30초로 충분
+    }
+  );
+
+  return response.data.records;
+}
+
+/**
+ * Step 2: 주간보고 생성 (Gemini AI 윤문 + 포맷팅)
+ *
+ * Step 1에서 추출한 records 배열을 JSON body로 전송하고
+ * 포맷팅된 주간보고 텍스트를 반환합니다.
+ */
+export async function generateWeeklyReport(
+  reportDate: string,
+  records: WeeklyReportRecord[]
+): Promise<string> {
+  const response = await apiClient.post<GenerateApiResponse>(
+    '/v1/weekly-report/generate',
+    { report_date: reportDate, records },
+    {
+      headers: { 'Content-Type': 'application/json' },
       timeout: 120000, // Gemini API 배치 처리 대기 시간 확보 (120초)
     }
   );
