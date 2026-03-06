@@ -1,5 +1,5 @@
 """
-WeeklyReportCalculator: Excel 파싱 + 데이터 필터링·매핑
+WeeklyReportCalculator: Excel 파싱 + 데이터 필터링·매핑 + Gemini 윤문
 
 Task 1-1 구현 범위:
     - 로직 1: AB/CD 파일 통합 (pd.concat)
@@ -7,12 +7,18 @@ Task 1-1 구현 범위:
     - 로직 3: 요청 ID / 진행상태 / 일정 / 구분 매핑
     - 로직 4: 제목 / 요구사항 / 처리내용 원본 텍스트 추출
 
-Task 1-2(Gemini 연동)는 이 파일을 수정하여 추가된다.
+Task 1-2 구현 범위:
+    - 로직 5: Gemini API 비동기 윤문 (Batch 방식, Rate Limit 방어)
+              - 최대 2회 Retry + 지수 백오프
+              - 실패 시 원본 텍스트 Fallback
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
+import json
+import logging
 from datetime import date, timedelta
 from typing import Optional
 
@@ -21,6 +27,9 @@ from pydantic import BaseModel
 
 from server.app.shared.base.calculator import BaseCalculator
 from server.app.shared.types import CalculatorInput, CalculatorOutput
+from server.app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ====================
 # 컬럼 인덱스 상수 (0-indexed, Excel 열 알파벳 → 위치)
@@ -88,7 +97,9 @@ class ProcessedRecord(BaseModel):
     """
     로직 3+4 매핑 결과 단위 레코드.
 
-    Task 1-2에서 Gemini가 title/requirements/processing_content를 윤문한다.
+    Task 1-2에서 Gemini가 title/requirements/processing_content를 윤문하여
+    refined_title / refined_overview / refined_content에 저장한다.
+    Gemini 미사용 또는 실패 시 refined 필드는 None으로 유지된다.
     """
 
     request_id: str
@@ -99,6 +110,11 @@ class ProcessedRecord(BaseModel):
     title: str              # G열 원본
     requirements: str       # H열 원본
     processing_content: Optional[str]  # R열 또는 AB열 원본, 없으면 None
+
+    # Gemini 윤문 결과 (Task 1-2)
+    refined_title: Optional[str] = None     # Gemini [제목] 결과
+    refined_overview: Optional[str] = None  # Gemini [개요] 결과
+    refined_content: Optional[str] = None   # Gemini [내용] 결과
 
 
 class WeeklyReportCalculatorOutput(CalculatorOutput):
@@ -116,15 +132,39 @@ class WeeklyReportCalculator(
     BaseCalculator[WeeklyReportCalculatorInput, WeeklyReportCalculatorOutput]
 ):
     """
-    Excel 파싱 + 데이터 필터링·매핑 Calculator (Task 1-1)
+    Excel 파싱 + 데이터 필터링·매핑 + Gemini 윤문 Calculator (Task 1-1 + 1-2)
 
     호출 순서:
         calculate()
-            └─ _consolidate_files()   # 로직 1: 파일 통합
-            └─ _get_week_range()      # 날짜 범위 계산
-            └─ _filter_rows()         # 로직 2: 필터링
-            └─ _map_records()         # 로직 3+4: 매핑 + 텍스트 추출
+            └─ _consolidate_files()      # 로직 1: 파일 통합
+            └─ _get_week_range()         # 날짜 범위 계산
+            └─ _filter_rows()            # 로직 2: 필터링
+            └─ _map_records()            # 로직 3+4: 매핑 + 텍스트 추출
+            └─ _refine_records_batch()   # 로직 5: Gemini 윤문 (모델 있을 때만)
     """
+
+    def __init__(self) -> None:
+        self._gemini_model = self._init_gemini()
+
+    def _init_gemini(self):
+        """
+        Gemini 모델을 초기화하여 반환한다.
+
+        google.generativeai를 lazy import하여 패키지 미설치 환경에서도
+        Task 1-1 로직이 정상 동작하도록 한다.
+        GEMINI_API_KEY가 없거나 초기화 실패 시 None을 반환한다.
+        """
+        api_key = settings.GEMINI_API_KEY
+        if not api_key:
+            logger.warning("GEMINI_API_KEY가 설정되지 않아 Gemini 윤문을 건너뜁니다.")
+            return None
+        try:
+            import google.generativeai as genai  # noqa: PLC0415
+            genai.configure(api_key=api_key)
+            return genai.GenerativeModel("gemini-1.5-flash")
+        except Exception as e:
+            logger.error(f"Gemini 모델 초기화 실패: {e}")
+            return None
 
     async def calculate(
         self, input_data: WeeklyReportCalculatorInput
@@ -156,6 +196,10 @@ class WeeklyReportCalculator(
 
         # 로직 3+4: 매핑 (CD는 lookup 전용)
         records = self._map_records(df_filtered, df_cd)
+
+        # 로직 5: Gemini 비동기 윤문 (모델이 없거나 레코드가 없으면 건너뜀)
+        if self._gemini_model and records:
+            records = await self._refine_records_batch(records)
 
         return WeeklyReportCalculatorOutput(records=records)
 
@@ -431,6 +475,135 @@ class WeeklyReportCalculator(
             )
 
         return title, requirements, processing_content
+
+    # --------------------------------------------------
+    # 로직 5: Gemini 비동기 윤문 (Batch 방식)
+    # --------------------------------------------------
+
+    async def _refine_records_batch(
+        self, records: list[ProcessedRecord]
+    ) -> list[ProcessedRecord]:
+        """
+        모든 레코드를 단일 Gemini API 호출로 일괄 윤문한다 (Batch 방식).
+
+        Rate Limit 방어: 레코드 수에 무관하게 API 호출 1회로 처리.
+        실패 또는 파싱 오류 시 원본 텍스트를 유지한다.
+        """
+        input_data = [
+            {
+                "id": i,
+                "title": r.title,
+                "requirements": r.requirements,
+                "processing_content": r.processing_content or "",
+            }
+            for i, r in enumerate(records)
+        ]
+        prompt = self._build_batch_prompt(input_data)
+        response_text = await self._call_gemini_with_retry(prompt)
+
+        if response_text is None:
+            logger.error("Gemini API 최종 실패. 전체 레코드 원본 텍스트를 유지합니다.")
+            return records
+
+        refined_list = self._parse_batch_response(response_text)
+        if refined_list is None:
+            logger.error("Gemini 응답 파싱 실패. 전체 레코드 원본 텍스트를 유지합니다.")
+            return records
+
+        # id 기준 lookup dict 구성
+        refined_map: dict[int, dict] = {item["id"]: item for item in refined_list if "id" in item}
+
+        result: list[ProcessedRecord] = []
+        for i, record in enumerate(records):
+            item = refined_map.get(i)
+            if item:
+                result.append(
+                    record.model_copy(
+                        update={
+                            "refined_title": item.get("refined_title") or None,
+                            "refined_overview": item.get("refined_overview") or None,
+                            "refined_content": item.get("refined_content") or None,
+                        }
+                    )
+                )
+            else:
+                result.append(record)
+        return result
+
+    def _build_batch_prompt(self, input_data: list[dict]) -> str:
+        """
+        일괄 윤문을 위한 Gemini 프롬프트를 구성한다.
+
+        출력 형식: id별 [제목], [개요], [내용]을 담은 JSON 배열.
+        """
+        items_json = json.dumps(input_data, ensure_ascii=False, indent=2)
+        return (
+            "다음은 IT 서비스 데스크 업무 항목 목록입니다. "
+            "각 항목을 주간보고서에 어울리도록 윤문해 주세요.\n\n"
+            "규칙:\n"
+            "- [제목]: 핵심만 담아 1줄로 작성\n"
+            "- [개요]: 요구사항을 1~2줄로 요약 (비즈니스 용어 사용)\n"
+            "- [내용]: 처리내용이 있으면 1~2줄로 요약, 없으면 빈 문자열\n"
+            "- 인사말, 이름, 불필요한 수식어 제거\n\n"
+            f"입력 데이터 (JSON):\n{items_json}\n\n"
+            "출력 형식 — 아래 JSON 배열만 출력하고 다른 텍스트는 포함하지 마세요:\n"
+            "[\n"
+            '  {"id": 0, "refined_title": "...", "refined_overview": "...", "refined_content": "..."},\n'
+            "  ...\n"
+            "]"
+        )
+
+    async def _call_gemini_with_retry(
+        self, prompt: str, max_retries: int = 2
+    ) -> Optional[str]:
+        """
+        Gemini API를 호출하고 실패 시 최대 max_retries회 재시도한다.
+
+        지수 백오프: 1회 실패 후 1초, 2회 실패 후 2초 대기.
+        모든 재시도 소진 후에도 실패하면 None을 반환한다.
+        """
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self._gemini_model.generate_content_async(prompt)
+                return response.text
+            except Exception as e:
+                if attempt < max_retries:
+                    wait_seconds = 2 ** attempt  # 1초, 2초
+                    logger.warning(
+                        f"Gemini API 호출 실패 (시도 {attempt + 1}/{max_retries + 1}): {e}. "
+                        f"{wait_seconds}초 후 재시도합니다."
+                    )
+                    await asyncio.sleep(wait_seconds)
+                else:
+                    logger.error(
+                        f"Gemini API 최종 실패 (시도 {attempt + 1}/{max_retries + 1}): {e}"
+                    )
+        return None
+
+    def _parse_batch_response(self, response_text: str) -> Optional[list[dict]]:
+        """
+        Gemini 배치 응답 텍스트를 파싱하여 dict 리스트로 반환한다.
+
+        JSON 코드 블록(```json ... ```) 래퍼를 자동으로 제거한다.
+        파싱 실패 시 None을 반환한다.
+        """
+        try:
+            text = response_text.strip()
+            # JSON 코드 블록 래퍼 제거
+            if text.startswith("```"):
+                lines = text.splitlines()
+                # 첫 줄(```json 또는 ```) 및 마지막 줄(```) 제거
+                inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
+                text = "\n".join(inner).strip()
+
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                logger.error(f"Gemini 응답이 배열이 아닙니다: {type(parsed)}")
+                return None
+            return parsed
+        except Exception as e:
+            logger.error(f"Gemini 응답 JSON 파싱 실패: {e}. 응답 텍스트: {response_text[:200]}")
+            return None
 
     # --------------------------------------------------
     # 공통 유틸리티
