@@ -328,7 +328,7 @@ interface WeeklyReportState {
 
 ---
 
-### - [ ] Task 3-2: 프론트엔드 UI 컴포넌트 + 페이지 조립
+### - [x] Task 3-2: 프론트엔드 UI 컴포넌트 + 페이지 조립
 
 > **선행 조건:** Task 3-1 완료
 
@@ -399,4 +399,4 @@ interface WeeklyReportState {
 
 ### Phase 3
 - [x] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
-- [ ] Task 3-2: 프론트엔드 UI 컴포넌트 + 페이지 조립
+- [x] Task 3-2: 프론트엔드 UI 컴포넌트 + 페이지 조립
