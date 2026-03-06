@@ -78,7 +78,7 @@ Phase 0 (환경 준비)
 
 ---
 
-### - [ ] Task 1-1: Calculator — Excel 파싱 + 데이터 필터링·매핑 구현
+### - [x] Task 1-1: Calculator — Excel 파싱 + 데이터 필터링·매핑 구현
 
 **작업 목표**
 Gemini 없이 순수 Pandas 로직만으로 Excel 통합 → 필터링 → 데이터 매핑 → 원본 텍스트 추출까지 완성한다.
