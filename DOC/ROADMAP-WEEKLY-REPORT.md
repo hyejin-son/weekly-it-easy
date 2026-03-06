@@ -272,7 +272,7 @@ POST /api/v1/weekly-report/generate
 
 ---
 
-### - [ ] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
+### - [x] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
 
 **작업 목표**
 UI 없이 데이터 레이어(타입, API 통신, 상태 관리)만 먼저 완성하여 백엔드 연동의 기반을 마련한다.
@@ -398,5 +398,5 @@ interface WeeklyReportState {
 - [x] Task 2-2: Service + Router 레이어 구현 및 API 등록
 
 ### Phase 3
-- [ ] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
+- [x] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
 - [ ] Task 3-2: 프론트엔드 UI 컴포넌트 + 페이지 조립
