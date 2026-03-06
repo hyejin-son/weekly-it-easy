@@ -2,3 +2,4 @@
 export { WeeklyReportDatePicker } from './WeeklyReportDatePicker';
 export { FileUploadSection } from './FileUploadSection';
 export { WeeklyReportResult } from './WeeklyReportResult';
+export { WeeklyReportPreviewTable } from './WeeklyReportPreviewTable';
