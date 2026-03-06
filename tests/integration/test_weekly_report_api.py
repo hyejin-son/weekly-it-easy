@@ -242,3 +242,198 @@ class TestGenerateWeeklyReport:
 
         assert resp.status_code == 200
         assert resp.json()["result_text"] == ""
+
+
+# ====================
+# Task 4-1: POST /extract 통합 테스트
+# ====================
+
+
+class TestExtractWeeklyReport:
+    """POST /api/v1/weekly-report/extract 엔드포인트 통합 테스트 (Task 4-1)."""
+
+    ENDPOINT = "/api/v1/weekly-report/extract"
+
+    # --------------------------------------------------
+    # 422: 필수 파라미터 누락
+    # --------------------------------------------------
+
+    def test_missing_all_params_returns_422(self, client: TestClient) -> None:
+        """파라미터가 전혀 없으면 422를 반환해야 한다."""
+        resp = client.post(self.ENDPOINT)
+        assert resp.status_code == 422
+
+    def test_missing_files_returns_422(self, client: TestClient) -> None:
+        """report_date만 전달하고 파일 없으면 422를 반환해야 한다."""
+        resp = client.post(self.ENDPOINT, data={"report_date": "2024-12-13"})
+        assert resp.status_code == 422
+
+    # --------------------------------------------------
+    # 400: 확장자 오류
+    # --------------------------------------------------
+
+    def test_invalid_extension_returns_400(self, client: TestClient) -> None:
+        """.txt 확장자 파일을 전달하면 400을 반환해야 한다."""
+        files = build_multipart_files(ab1_name="report.txt")
+        resp = client.post(
+            self.ENDPOINT,
+            data={"report_date": "2024-12-13"},
+            files=files,
+        )
+        assert resp.status_code == 400
+        assert "detail" in resp.json()
+
+    # --------------------------------------------------
+    # 400: 컬럼 부족
+    # --------------------------------------------------
+
+    def test_insufficient_columns_returns_400(self, client: TestClient) -> None:
+        """컬럼 수가 MIN_REQUIRED_COLS 미만이면 400을 반환해야 한다."""
+        files = build_multipart_files(n_cols=5)
+        resp = client.post(
+            self.ENDPOINT,
+            data={"report_date": "2024-12-13"},
+            files=files,
+        )
+        assert resp.status_code == 400
+        assert "detail" in resp.json()
+
+    # --------------------------------------------------
+    # 200: 정상 흐름 (extract mock)
+    # --------------------------------------------------
+
+    def test_success_returns_200_with_records_list(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """정상 파일 + mock extract → 200 + records 배열 반환."""
+        from server.app.domain.weekly_report import calculator as calc_mod
+        from server.app.domain.weekly_report.schemas import WeeklyReportRecord
+
+        sample_record = WeeklyReportRecord(
+            request_id="REQ-001",
+            company="세아창원특수강",
+            biz_system="세아창원특수강>기타>e-Procurement",
+            biz_system2="",
+            category="개발/개선",
+            status="완료",
+            schedule="~12/13",
+            title_raw="테스트 제목",
+            summary_raw="테스트 요구사항",
+            content_raw="테스트 처리내용",
+        )
+
+        async def mock_extract(self_inner, input_data):
+            return [sample_record]
+
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "extract", mock_extract)
+
+        files = build_multipart_files()
+        resp = client.post(
+            self.ENDPOINT,
+            data={"report_date": "2024-12-13"},
+            files=files,
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "records" in body
+        assert isinstance(body["records"], list)
+        assert len(body["records"]) == 1
+
+    def test_success_response_schema(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """응답 JSON이 ExtractResponse 스키마를 따라야 한다 (records 키 + 10개 필드)."""
+        from server.app.domain.weekly_report import calculator as calc_mod
+        from server.app.domain.weekly_report.schemas import WeeklyReportRecord
+
+        sample_record = WeeklyReportRecord(
+            request_id="REQ-002",
+            company="세아베스틸",
+            biz_system="세아베스틸>기타>e-Procurement",
+            biz_system2="세아베스틸>기타>e-Procurement",
+            category="프로젝트/운영",
+            status="진행중",
+            schedule="",
+            title_raw="스키마 검증 제목",
+            summary_raw="스키마 검증 요구사항",
+            content_raw=None,
+        )
+
+        async def mock_extract(self_inner, input_data):
+            return [sample_record]
+
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "extract", mock_extract)
+
+        files = build_multipart_files()
+        resp = client.post(
+            self.ENDPOINT,
+            data={"report_date": "2024-12-13"},
+            files=files,
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body.keys()) == {"records"}
+        assert isinstance(body["records"], list)
+
+        record = body["records"][0]
+        expected_fields = {
+            "request_id", "company", "biz_system", "biz_system2",
+            "category", "status", "schedule", "title_raw", "summary_raw", "content_raw",
+        }
+        assert set(record.keys()) == expected_fields
+        assert record["content_raw"] is None
+
+    def test_empty_records_is_valid(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """필터 조건에 맞는 레코드가 없으면 records=[] 을 반환해야 한다."""
+        from server.app.domain.weekly_report import calculator as calc_mod
+
+        async def mock_extract(self_inner, input_data):
+            return []
+
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "extract", mock_extract)
+
+        files = build_multipart_files()
+        resp = client.post(
+            self.ENDPOINT,
+            data={"report_date": "2024-12-13"},
+            files=files,
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"records": []}
+
+    def test_no_gemini_call_fast_response(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        extract는 Gemini를 호출하지 않으므로 2초 이내에 응답해야 한다.
+        _refine_records_batch가 호출되면 즉시 AssertionError를 발생시켜 검출한다.
+        """
+        import time
+        from server.app.domain.weekly_report import calculator as calc_mod
+
+        async def mock_extract(self_inner, input_data):
+            return []
+
+        async def must_not_be_called(*args, **kwargs):
+            raise AssertionError("extract() 내에서 Gemini(_refine_records_batch)가 호출되었습니다!")
+
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "extract", mock_extract)
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "_refine_records_batch", must_not_be_called)
+
+        files = build_multipart_files()
+        start = time.monotonic()
+        resp = client.post(
+            self.ENDPOINT,
+            data={"report_date": "2024-12-13"},
+            files=files,
+        )
+        elapsed = time.monotonic() - start
+
+        assert resp.status_code == 200
+        assert elapsed < 2.0, f"extract API가 {elapsed:.2f}초로 2초를 초과했습니다."
