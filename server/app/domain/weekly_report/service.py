@@ -30,7 +30,7 @@ from server.app.domain.weekly_report.formatter import (
     WeeklyReportFormatter,
     WeeklyReportFormatterInput,
 )
-from server.app.domain.weekly_report.schemas import ExtractResponse, WeeklyReportResponse
+from server.app.domain.weekly_report.schemas import ExtractResponse, GenerateRequest, WeeklyReportResponse
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,36 @@ class WeeklyReportService(BaseService[WeeklyReportServiceInput, WeeklyReportResp
             raise
         except Exception as exc:
             logger.exception("WeeklyReportService.extract_records 실패")
+            return ServiceResult.fail(str(exc))
+
+    async def generate_report(
+        self,
+        request: GenerateRequest,
+        **kwargs: Any,
+    ) -> ServiceResult[WeeklyReportResponse]:
+        """
+        WeeklyReportRecord 리스트를 받아 Gemini 윤문 + 포맷팅 결과를 반환한다 (Task 4-2).
+
+        파일 파싱·검증 없음. /extract 단계에서 전달된 records만 사용한다.
+
+        흐름:
+            1. Calculator.refine() 실행 (Gemini 윤문)
+            2. Formatter 실행 (텍스트 포맷팅)
+            3. ServiceResult.ok(WeeklyReportResponse) 반환
+        """
+        try:
+            processed = await self.calculator.refine(request.records)
+
+            fmt_output = await self.formatter.format(
+                WeeklyReportFormatterInput(records=processed)
+            )
+
+            return ServiceResult.ok(
+                WeeklyReportResponse(result_text=fmt_output.result_text)
+            )
+
+        except Exception as exc:
+            logger.exception("WeeklyReportService.generate_report 실패")
             return ServiceResult.fail(str(exc))
 
     # --------------------------------------------------

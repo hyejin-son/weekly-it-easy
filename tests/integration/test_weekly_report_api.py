@@ -1,13 +1,20 @@
 """
-WeeklyReport API 통합 테스트 (Task 2-2)
+WeeklyReport API 통합 테스트
 
 테스트 범위:
-    POST /api/v1/weekly-report/generate
+    POST /api/v1/weekly-report/generate (Task 4-2: JSON body)
+
+    - body 없음 → 422 응답 (FastAPI 자동 검증)
+    - records 필드 누락 → 422 응답
+    - 빈 records + mock → 200 응답 + result_text=""
+    - 유효 records + mock → 200 응답 + result_text 반환
+    - 응답 스키마 검증
+
+    POST /api/v1/weekly-report/extract (Task 4-1: multipart)
 
     - 확장자 오류 파일 → 400 응답
     - 컬럼 부족 파일  → 400 응답
-    - 정상 파일 + mock → 200 응답 + result_text 반환
-    - 파일 누락       → 422 응답 (FastAPI 자동 검증)
+    - 정상 파일 + mock → 200 응답 + records 반환
 """
 
 from __future__ import annotations
@@ -73,175 +80,158 @@ def build_multipart_files(
 
 
 class TestGenerateWeeklyReport:
-    """POST /api/v1/weekly-report/generate 엔드포인트 통합 테스트."""
+    """POST /api/v1/weekly-report/generate 엔드포인트 통합 테스트 (Task 4-2: JSON body)."""
 
     ENDPOINT = "/api/v1/weekly-report/generate"
 
     # --------------------------------------------------
-    # 422: 필수 파라미터 누락
+    # 422: 필수 파라미터 누락 (FastAPI 자동 검증)
     # --------------------------------------------------
 
-    def test_missing_all_params_returns_422(self, client: TestClient) -> None:
-        """파라미터가 전혀 없으면 FastAPI 자동 검증 오류(422)를 반환해야 한다."""
+    def test_missing_body_returns_422(self, client: TestClient) -> None:
+        """body가 전혀 없으면 FastAPI 자동 검증 오류(422)를 반환해야 한다."""
         resp = client.post(self.ENDPOINT)
         assert resp.status_code == 422
 
-    def test_missing_files_returns_422(self, client: TestClient) -> None:
-        """report_date만 전달하고 파일 없으면 422를 반환해야 한다."""
-        resp = client.post(self.ENDPOINT, data={"report_date": "2024-12-13"})
+    def test_missing_records_field_returns_422(self, client: TestClient) -> None:
+        """records 필드 없이 report_date만 보내면 422를 반환해야 한다."""
+        resp = client.post(self.ENDPOINT, json={"report_date": "2024-12-13"})
         assert resp.status_code == 422
 
     # --------------------------------------------------
-    # 400: 확장자 오류
+    # 200: 빈 records → result_text=""
     # --------------------------------------------------
 
-    def test_invalid_extension_returns_400(self, client: TestClient) -> None:
-        """.txt 확장자 파일을 전달하면 400을 반환해야 한다."""
-        files = build_multipart_files(ab1_name="report.txt")
-        resp = client.post(
-            self.ENDPOINT,
-            data={"report_date": "2024-12-13"},
-            files=files,
-        )
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "detail" in body
-
-    def test_csv_extension_returns_400(self, client: TestClient) -> None:
-        """.csv 확장자 파일을 전달하면 400을 반환해야 한다."""
-        files = build_multipart_files(
-            cd2_name="data.csv",
-            cd2_bytes=b"col1,col2\nval1,val2",
-        )
-        resp = client.post(
-            self.ENDPOINT,
-            data={"report_date": "2024-12-13"},
-            files=files,
-        )
-        assert resp.status_code == 400
-
-    # --------------------------------------------------
-    # 400: 컬럼 부족
-    # --------------------------------------------------
-
-    def test_insufficient_columns_returns_400(self, client: TestClient) -> None:
-        """컬럼 수가 MIN_REQUIRED_COLS 미만이면 400을 반환해야 한다."""
-        files = build_multipart_files(n_cols=5)
-        resp = client.post(
-            self.ENDPOINT,
-            data={"report_date": "2024-12-13"},
-            files=files,
-        )
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "detail" in body
-
-    # --------------------------------------------------
-    # 200: 정상 흐름 (Calculator / Formatter mock)
-    # --------------------------------------------------
-
-    def test_success_returns_200_with_result_text(
+    def test_empty_records_returns_200_with_empty_result(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """
-        정상 파일 + mock Calculator + mock Formatter → 200 + result_text 반환.
-        """
-        from server.app.domain.weekly_report.calculator import (
-            WeeklyReportCalculatorOutput,
-        )
-        from server.app.domain.weekly_report.formatter import (
-            WeeklyReportFormatterOutput,
-        )
+        """records=[] 전달 시 mock Formatter가 빈 텍스트를 반환하면 200 + result_text=""."""
+        from server.app.domain.weekly_report.formatter import WeeklyReportFormatterOutput
         from server.app.domain.weekly_report import calculator as calc_mod
         from server.app.domain.weekly_report import formatter as fmt_mod
 
-        async def mock_calculate(self_inner, input_data):
-            return WeeklyReportCalculatorOutput(records=[])
+        async def mock_refine(self_inner, records):
+            return []
+
+        async def mock_format(self_inner, input_data):
+            return WeeklyReportFormatterOutput(result_text="")
+
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "refine", mock_refine)
+        monkeypatch.setattr(fmt_mod.WeeklyReportFormatter, "format", mock_format)
+
+        resp = client.post(
+            self.ENDPOINT,
+            json={"report_date": "2024-12-13", "records": []},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result_text"] == ""
+
+    # --------------------------------------------------
+    # 200: 유효 records → result_text 반환
+    # --------------------------------------------------
+
+    def test_valid_records_returns_result_text(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """유효 records JSON + mock refine + mock format → 200 + 포맷 텍스트 반환."""
+        from server.app.domain.weekly_report.calculator import ProcessedRecord
+        from server.app.domain.weekly_report.formatter import WeeklyReportFormatterOutput
+        from server.app.domain.weekly_report import calculator as calc_mod
+        from server.app.domain.weekly_report import formatter as fmt_mod
+
+        sample_processed = ProcessedRecord(
+            request_id="SR-001",
+            status="완료",
+            schedule="~12/13",
+            category="개발/개선",
+            company="세아창원특수강",
+            title="테스트 제목",
+            requirements="테스트 요구사항",
+            processing_content="테스트 처리내용",
+        )
+
+        async def mock_refine(self_inner, records):
+            return [sample_processed]
 
         async def mock_format(self_inner, input_data):
             return WeeklyReportFormatterOutput(result_text="◈EPRO 운영\n[창원]\n▣ 테스트 항목")
 
-        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "calculate", mock_calculate)
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "refine", mock_refine)
         monkeypatch.setattr(fmt_mod.WeeklyReportFormatter, "format", mock_format)
 
-        files = build_multipart_files()
-        resp = client.post(
-            self.ENDPOINT,
-            data={"report_date": "2024-12-13"},
-            files=files,
-        )
+        payload = {
+            "report_date": "2024-12-13",
+            "records": [
+                {
+                    "request_id": "SR-001",
+                    "company": "세아창원특수강",
+                    "biz_system": "세아창원특수강>기타>e-Procurement",
+                    "biz_system2": "세아창원특수강>기타>e-Procurement",
+                    "category": "개발/개선",
+                    "status": "완료",
+                    "schedule": "~12/13",
+                    "title_raw": "테스트 제목",
+                    "summary_raw": "테스트 요구사항",
+                    "content_raw": "테스트 처리내용",
+                }
+            ],
+        }
+        resp = client.post(self.ENDPOINT, json=payload)
 
         assert resp.status_code == 200
         body = resp.json()
         assert "result_text" in body
         assert "◈EPRO 운영" in body["result_text"]
 
-    def test_success_response_schema(
+    def test_response_schema(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """응답 JSON이 WeeklyReportResponse 스키마 형태를 따라야 한다."""
-        from server.app.domain.weekly_report.calculator import (
-            WeeklyReportCalculatorOutput,
-        )
-        from server.app.domain.weekly_report.formatter import (
-            WeeklyReportFormatterOutput,
-        )
+        """응답 JSON이 WeeklyReportResponse 스키마 형태(result_text 키만)를 따라야 한다."""
+        from server.app.domain.weekly_report.formatter import WeeklyReportFormatterOutput
         from server.app.domain.weekly_report import calculator as calc_mod
         from server.app.domain.weekly_report import formatter as fmt_mod
 
-        async def mock_calculate(self_inner, input_data):
-            return WeeklyReportCalculatorOutput(records=[])
+        async def mock_refine(self_inner, records):
+            return []
 
         async def mock_format(self_inner, input_data):
             return WeeklyReportFormatterOutput(result_text="결과 텍스트")
 
-        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "calculate", mock_calculate)
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "refine", mock_refine)
         monkeypatch.setattr(fmt_mod.WeeklyReportFormatter, "format", mock_format)
 
-        files = build_multipart_files()
         resp = client.post(
             self.ENDPOINT,
-            data={"report_date": "2024-12-13"},
-            files=files,
+            json={"report_date": "2024-12-13", "records": []},
         )
 
         assert resp.status_code == 200
         body = resp.json()
-        # WeeklyReportResponse 스키마: result_text 키 하나만 있어야 함
         assert set(body.keys()) == {"result_text"}
         assert isinstance(body["result_text"], str)
 
-    def test_empty_result_text_is_valid(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """records가 없으면 result_text=""를 반환해야 한다 (Formatter 스펙)."""
-        from server.app.domain.weekly_report.calculator import (
-            WeeklyReportCalculatorOutput,
-        )
-        from server.app.domain.weekly_report.formatter import (
-            WeeklyReportFormatterOutput,
-        )
+    def test_no_file_upload_required(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """파일 업로드 없이 JSON body만으로 200을 반환해야 한다 (multipart 방식 완전 대체)."""
+        from server.app.domain.weekly_report.formatter import WeeklyReportFormatterOutput
         from server.app.domain.weekly_report import calculator as calc_mod
         from server.app.domain.weekly_report import formatter as fmt_mod
 
-        async def mock_calculate(self_inner, input_data):
-            return WeeklyReportCalculatorOutput(records=[])
+        async def mock_refine(self_inner, records):
+            return []
 
         async def mock_format(self_inner, input_data):
             return WeeklyReportFormatterOutput(result_text="")
 
-        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "calculate", mock_calculate)
+        monkeypatch.setattr(calc_mod.WeeklyReportCalculator, "refine", mock_refine)
         monkeypatch.setattr(fmt_mod.WeeklyReportFormatter, "format", mock_format)
 
-        files = build_multipart_files()
+        # 파일 없이 순수 JSON body만 전송
         resp = client.post(
             self.ENDPOINT,
-            data={"report_date": "2024-12-13"},
-            files=files,
+            json={"report_date": "2024-12-13", "records": []},
         )
-
         assert resp.status_code == 200
-        assert resp.json()["result_text"] == ""
 
 
 # ====================

@@ -204,6 +204,50 @@ class WeeklyReportCalculator(
 
         return WeeklyReportCalculatorOutput(records=records)
 
+    async def refine(
+        self, records: list[WeeklyReportRecord]
+    ) -> list[ProcessedRecord]:
+        """
+        WeeklyReportRecord 리스트를 Gemini로 윤문하여 ProcessedRecord 리스트를 반환한다 (Task 4-2).
+
+        파일 파싱(Excel) 코드 없음. Batch API 호출 및 Retry 로직만 수행한다.
+        GEMINI_API_KEY가 없거나 모델 초기화 실패 시 원본 텍스트가 유지된다.
+
+        Args:
+            records: /extract 단계에서 얻은 WeeklyReportRecord 리스트
+
+        Returns:
+            list[ProcessedRecord]: Gemini 윤문 결과(refined_* 필드 채워짐)를 포함한 레코드 리스트
+        """
+        processed = [self._weekly_record_to_processed(r) for r in records]
+
+        if self._gemini_model and processed:
+            processed = await self._refine_records_batch(processed)
+
+        return processed
+
+    def _weekly_record_to_processed(self, record: WeeklyReportRecord) -> ProcessedRecord:
+        """
+        WeeklyReportRecord를 ProcessedRecord로 변환한다 (Task 4-2).
+
+        필드 매핑:
+            title_raw     → title
+            summary_raw   → requirements
+            content_raw   → processing_content
+            schedule (빈 문자열) → None
+            나머지 필드는 직접 매핑
+        """
+        return ProcessedRecord(
+            request_id=record.request_id,
+            status=record.status,
+            schedule=record.schedule if record.schedule else None,
+            category=record.category,
+            company=record.company,
+            title=record.title_raw,
+            requirements=record.summary_raw,
+            processing_content=record.content_raw,
+        )
+
     async def extract(
         self, input_data: WeeklyReportCalculatorInput
     ) -> list[WeeklyReportRecord]:
