@@ -39,7 +39,7 @@ export async function extractWeeklyReport(
     formData,
     {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 30000, // AI 없이 순수 파싱만이므로 30초로 충분
+      timeout: 120000, // 실무 엑셀 4개 파싱·병합 연산 대기 시간 확보 (120초)
     }
   );
 
