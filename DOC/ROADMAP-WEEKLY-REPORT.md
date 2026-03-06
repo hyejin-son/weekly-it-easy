@@ -219,7 +219,7 @@ Calculator에서 정제된 레코드 리스트를 복사 가능한 최종 텍스
 
 ---
 
-### - [ ] Task 2-2: Service + Router 레이어 구현 및 API 등록
+### - [x] Task 2-2: Service + Router 레이어 구현 및 API 등록
 
 > **선행 조건:** Task 2-1 완료
 
@@ -395,7 +395,7 @@ interface WeeklyReportState {
 
 ### Phase 2
 - [x] Task 2-1: Formatter — 최종 텍스트 포맷 생성 구현
-- [ ] Task 2-2: Service + Router 레이어 구현 및 API 등록
+- [x] Task 2-2: Service + Router 레이어 구현 및 API 등록
 
 ### Phase 3
 - [ ] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
