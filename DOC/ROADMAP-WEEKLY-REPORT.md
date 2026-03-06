@@ -29,6 +29,11 @@ Phase 0 (환경 준비)
                             └── Phase 3 (프론트엔드)
                                     ├── Task 3-1: 타입·API 클라이언트·스토어
                                     └── Task 3-2: UI 컴포넌트·페이지 (Task 3-1 선행)
+                                        └── Phase 4 (2-Step 아키텍처 리팩토링)
+                                                ├── Task 4-1: 백엔드 스키마 + Extract API
+                                                └── Task 4-2: Generate API 리팩토링 (Task 4-1 선행)
+                                                    └── Task 4-3: 프론트엔드 타입·API·스토어 수정 (Task 4-2 선행)
+                                                        └── Task 4-4: 프론트엔드 UI 미리보기 + 페이지 개편 (Task 4-3 선행)
 ```
 
 ---
@@ -386,6 +391,259 @@ interface WeeklyReportState {
 
 ---
 
+---
+
+## Phase 4 — 2-Step 아키텍처 리팩토링
+
+> **선행 조건:** Phase 3 완료
+> **목적:** 단일 API 호출(엑셀 파싱 + AI 윤문 동시 처리)로 인한 타임아웃 문제를 해결하기 위해, Extract(파싱 전용)와 Generate(AI + 포맷팅) 두 단계로 전면 분리한다.
+
+---
+
+### - [ ] Task 4-1: 백엔드 스키마 + Extract API 구현
+
+**작업 목표**
+AI 없이 엑셀 파싱·필터링 결과를 구조화된 레코드 리스트로 반환하는 신규 엔드포인트를 구현한다.
+
+**작업 범위 (수정/생성 파일)**
+
+| 구분 | 파일 경로 | 작업 내용 |
+|------|-----------|-----------|
+| 수정 | `server/app/domain/weekly_report/schemas.py` | `WeeklyReportRecord`, `ExtractResponse`, `GenerateRequest` 추가 |
+| 수정 | `server/app/domain/weekly_report/calculator.py` | 기존 로직 1~4 전처리를 `extract()` 메서드로 분리 |
+| 수정 | `server/app/domain/weekly_report/service.py` | `extract_records()` 서비스 메서드 추가 |
+| 수정 | `server/app/domain/weekly_report/router.py` | `POST /api/v1/weekly-report/extract` 엔드포인트 추가 |
+
+**스키마 상세 (`schemas.py` 추가 내용)**
+
+```python
+class WeeklyReportRecord(BaseModel):
+    request_id: str        # A열
+    company: str           # J열 (창원 / 베스틸)
+    biz_system: str        # E열 또는 F열 — 업무시스템
+    biz_system2: str       # W열 — 업무시스템2 (필터링 기준값 포함)
+    category: str          # 구분 (개발/개선 or 프로젝트/운영)
+    status: str            # 진행상태 (완료 / 대기 / 진행중)
+    schedule: str          # ~mm/dd 포맷, 없으면 빈 문자열
+    title_raw: str         # G열 제목 원본
+    summary_raw: str       # H열 요구사항 원본
+    content_raw: str | None  # R열 또는 AB열 처리내용 원본 (없으면 None)
+
+class ExtractResponse(BaseModel):
+    records: list[WeeklyReportRecord]
+
+class GenerateRequest(BaseModel):
+    report_date: str
+    records: list[WeeklyReportRecord]
+```
+
+**Calculator `extract()` 메서드**
+- 기존 로직 1 (통합), 로직 2 (필터링), 로직 3 (기본 매핑), 로직 4 전처리(원본 텍스트 추출)를 하나의 `extract()` 메서드로 캡슐화
+- **Gemini 호출 없음** — 순수 Pandas 처리만
+- 반환 타입: `list[WeeklyReportRecord]`
+
+**새 엔드포인트 명세**
+```
+POST /api/v1/weekly-report/extract
+  Request: multipart/form-data
+    - report_date: str
+    - file_ab_1, file_ab_2: UploadFile
+    - file_cd_1, file_cd_2: UploadFile
+  Response: ExtractResponse { records: WeeklyReportRecord[] }
+```
+
+**완료 기준**
+- `POST /api/v1/weekly-report/extract` 호출 시 AI 없이 수 초 이내 레코드 목록 JSON 반환
+- 기존 `POST /api/v1/weekly-report/generate` 엔드포인트 동작 유지 (이 Task에서는 건드리지 않음)
+- Swagger UI에 새 엔드포인트 노출 확인
+
+**주의사항**
+- 기존 `calculator.py`의 Gemini 로직은 이 Task에서 변경 금지 — 다음 Task 4-2에서 분리
+- `WeeklyReportRecord`는 파이썬/TypeScript 양쪽에서 사용하므로 필드명 snake_case로 통일
+
+---
+
+### - [ ] Task 4-2: 백엔드 Generate API 리팩토링
+
+> **선행 조건:** Task 4-1 완료
+
+**작업 목표**
+`POST /api/v1/weekly-report/generate` 엔드포인트 입력을 기존 "파일 4개 multipart"에서 "구조화된 레코드 JSON"으로 변경한다.
+Calculator의 Gemini 윤문 로직을 `refine()` 메서드로 분리하고, Formatter까지 연결한다.
+
+**작업 범위 (수정/생성 파일)**
+
+| 구분 | 파일 경로 | 작업 내용 |
+|------|-----------|-----------|
+| 수정 | `server/app/domain/weekly_report/calculator.py` | Gemini 윤문 로직을 `refine(records)` 메서드로 분리 |
+| 수정 | `server/app/domain/weekly_report/service.py` | `generate_report(request: GenerateRequest)` 메서드 수정 |
+| 수정 | `server/app/domain/weekly_report/router.py` | Generate 엔드포인트 입력 타입 변경 (multipart → JSON body) |
+
+**Calculator `refine()` 메서드**
+- 입력: `list[WeeklyReportRecord]` (이미 추출된 레코드)
+- `title_raw`, `summary_raw`, `content_raw`를 Gemini로 윤문
+- 윤문 결과를 `WeeklyReportRecord`에 `title`, `summary`, `content` 필드로 추가하거나, 별도 정제 레코드 타입(`RefinedRecord`)으로 반환
+- Batch 방식(JSON 배열 프롬프트) 유지, Retry 로직 유지
+- 파일 파싱 코드 일체 없음
+
+**변경된 엔드포인트 명세**
+```
+POST /api/v1/weekly-report/generate
+  Request: application/json
+    GenerateRequest { report_date: str, records: WeeklyReportRecord[] }
+  Response: WeeklyReportResponse { result_text: str }
+```
+
+**완료 기준**
+- `GenerateRequest` JSON body 전송 시 Gemini 윤문 + 포맷팅 결과 텍스트 반환
+- 파일 업로드 없이 레코드만으로 동작 확인
+- 기존 Formatter 포맷(`◈EPRO 운영`, `[창원]`, `[베스틸]` 구조) 그대로 유지
+
+**주의사항**
+- 기존 multipart 방식 엔드포인트는 이 Task에서 완전히 대체됨 (하위 호환 불필요)
+- `RefinedRecord` 추가 타입 도입이 필요하다면 `schemas.py`에 함께 추가
+
+---
+
+### - [ ] Task 4-3: 프론트엔드 타입·API 클라이언트·Zustand 스토어 수정
+
+> **선행 조건:** Task 4-2 완료
+
+**작업 목표**
+2-Step 플로우를 지원하는 데이터 레이어(타입, API 통신, 상태 관리)를 재구성한다.
+
+**작업 범위 (수정/생성 파일)**
+
+| 구분 | 파일 경로 | 작업 내용 |
+|------|-----------|-----------|
+| 수정 | `client/src/domains/weeklyits/types.ts` | `WeeklyReportRecord` 타입 추가, 스토어 상태 타입 확장 |
+| 수정 | `client/src/domains/weeklyits/api.ts` | `extractWeeklyReport()` 추가, `generateWeeklyReport()` 입력 타입 변경 |
+| 수정 | `client/src/domains/weeklyits/store.ts` | 2-Step 상태 분리, `extractReport()` / `generateReport()` 액션 분리 |
+
+**`types.ts` 추가 내용**
+```typescript
+interface WeeklyReportRecord {
+  request_id: string;
+  company: string;
+  biz_system: string;
+  biz_system2: string;
+  category: string;
+  status: string;
+  schedule: string;
+  title_raw: string;
+  summary_raw: string;
+  content_raw: string | null;
+}
+
+interface WeeklyReportState {
+  // Step 1 입력
+  reportDate: string;
+  files: WeeklyReportFiles;
+  // Step 1 결과
+  extractedRecords: WeeklyReportRecord[];
+  isExtracted: boolean;
+  isExtracting: boolean;
+  // Step 2 결과
+  resultText: string;
+  isGenerating: boolean;
+  // 공통
+  error: string | null;
+}
+```
+
+**`api.ts` 변경 내용**
+```typescript
+// 신규 추가
+extractWeeklyReport(reportDate: string, files: WeeklyReportFiles): Promise<WeeklyReportRecord[]>
+// → FormData → POST /api/v1/weekly-report/extract → records 배열 반환
+
+// 입력 타입 변경
+generateWeeklyReport(reportDate: string, records: WeeklyReportRecord[]): Promise<string>
+// → JSON body → POST /api/v1/weekly-report/generate → result_text 반환
+```
+
+**`store.ts` 액션 분리**
+- `extractReport()`: Step 1 API 호출 → `extractedRecords`, `isExtracted` 업데이트
+- `generateReport()`: Step 2 API 호출 (`extractedRecords` 사용) → `resultText` 업데이트
+- 기존 `generateReport()` 단일 액션은 위 두 액션으로 대체
+
+**완료 기준**
+- TypeScript 컴파일 오류 없음 (`tsc --noEmit`)
+- `extractReport()` 호출 → `extractedRecords` 배열 채워짐 확인 (DevTools)
+- `generateReport()` 호출 → `resultText` 업데이트 확인 (DevTools)
+
+**주의사항**
+- `WeeklyReportRecord` 필드명은 백엔드 snake_case와 정확히 일치해야 함
+- Step 2 API는 `FormData` 아닌 `Content-Type: application/json` 전송
+
+---
+
+### - [ ] Task 4-4: 프론트엔드 UI — 미리보기 테이블 + 페이지 전면 개편
+
+> **선행 조건:** Task 4-3 완료
+
+**작업 목표**
+Step 1 결과를 테이블로 시각화하는 신규 컴포넌트를 구현하고, `WeeklyItsPage.tsx`를 2-Step UX 흐름으로 전면 재편한다.
+
+**작업 범위 (수정/생성 파일)**
+
+| 구분 | 파일 경로 | 작업 내용 |
+|------|-----------|-----------|
+| 생성 | `client/src/domains/weeklyits/components/WeeklyReportPreviewTable.tsx` | 미리보기 테이블 신규 구현 |
+| 수정 | `client/src/domains/weeklyits/pages/WeeklyItsPage.tsx` | 2-Step UX로 전면 개편 |
+| 수정 | `client/src/domains/weeklyits/components/index.ts` | 새 컴포넌트 export 추가 |
+
+**`WeeklyReportPreviewTable.tsx` 상세**
+- `records: WeeklyReportRecord[]` props 수신
+- 8개 컬럼 테이블 렌더링:
+
+| # | 컬럼 헤더 | 데이터 필드 |
+|---|-----------|------------|
+| 1 | 요청 ID | `request_id` |
+| 2 | 회사 | `company` |
+| 3 | 업무시스템 | `biz_system` |
+| 4 | 업무시스템2 | `biz_system2` |
+| 5 | 구분 | `category` |
+| 6 | 진행상태 | `status` |
+| 7 | 일정 | `schedule` |
+| 8 | 제목(원본) | `title_raw` |
+
+- 가로 스크롤 지원 (컬럼이 많으므로 `overflow-x: auto`)
+- 빈 `records` 시 안내 문구 표시
+
+**`WeeklyItsPage.tsx` 2-Step UX 흐름**
+```
+[Step 1 영역]
+- 날짜 선택 (WeeklyReportDatePicker)
+- 파일 업로드 (FileUploadSection)
+- "데이터 추출" 버튼 (4개 파일 미선택 시 비활성화)
+- isExtracting: 로딩 스피너 표시
+
+[Step 2 영역 — isExtracted === true 일 때만 노출]
+- 미리보기 테이블 (WeeklyReportPreviewTable)
+- "주간보고 생성" 버튼
+- isGenerating: AI 처리 중 스피너 표시
+
+[결과 영역 — resultText 있을 때만 노출]
+- WeeklyReportResult (기존 유지)
+
+[에러 영역]
+- error 상태 시 에러 메시지 노출
+```
+
+**완료 기준**
+- 날짜 + 파일 4개 선택 → "데이터 추출" 클릭 → 테이블 노출 확인
+- 테이블 확인 후 "주간보고 생성" 클릭 → AI 로딩 후 결과 텍스트 출력
+- 복사 버튼 정상 동작 확인
+- 에러 발생 시 에러 메시지 화면 노출 확인
+
+**주의사항**
+- `업무시스템2` 컬럼 값은 긴 문자열(`세아창원특수강>기타>e-Procurement`)이므로 셀 최소 너비 지정 또는 말줄임 처리 권장
+- 기존 `MainLayout` 래퍼 유지
+- `WeeklyReportResult` 컴포넌트는 이 Task에서 수정하지 않음
+
+---
+
 ## 전체 체크리스트 요약
 
 ### Phase 0
@@ -402,3 +660,9 @@ interface WeeklyReportState {
 ### Phase 3
 - [x] Task 3-1: 프론트엔드 타입 / API 클라이언트 / Zustand 스토어 구현
 - [x] Task 3-2: 프론트엔드 UI 컴포넌트 + 페이지 조립
+
+### Phase 4
+- [ ] Task 4-1: 백엔드 스키마 + Extract API 구현
+- [ ] Task 4-2: 백엔드 Generate API 리팩토링
+- [ ] Task 4-3: 프론트엔드 타입·API 클라이언트·Zustand 스토어 수정
+- [ ] Task 4-4: 프론트엔드 UI — 미리보기 테이블 + 페이지 전면 개편
