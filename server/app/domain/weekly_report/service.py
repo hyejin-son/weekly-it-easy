@@ -30,7 +30,7 @@ from server.app.domain.weekly_report.formatter import (
     WeeklyReportFormatter,
     WeeklyReportFormatterInput,
 )
-from server.app.domain.weekly_report.schemas import WeeklyReportResponse
+from server.app.domain.weekly_report.schemas import ExtractResponse, WeeklyReportResponse
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,44 @@ class WeeklyReportService(BaseService[WeeklyReportServiceInput, WeeklyReportResp
             raise
         except Exception as exc:
             logger.exception("WeeklyReportService.execute 실패")
+            return ServiceResult.fail(str(exc))
+
+    async def extract_records(
+        self,
+        request: WeeklyReportServiceInput,
+        **kwargs: Any,
+    ) -> ServiceResult[ExtractResponse]:
+        """
+        Excel 파싱·필터링만 수행하고 WeeklyReportRecord 목록을 반환한다 (Task 4-1).
+
+        Gemini 윤문을 수행하지 않으므로 즉시 응답이 가능하다.
+
+        흐름:
+            1. 확장자 검증   → 실패 시 HTTPException(400)
+            2. 컬럼 수 검증  → 실패 시 HTTPException(400)
+            3. Calculator.extract() 실행 (Excel 파싱만, Gemini 없음)
+            4. ServiceResult.ok(ExtractResponse) 반환
+        """
+        try:
+            self._validate_extensions(request)
+            self._validate_columns(request)
+
+            records = await self.calculator.extract(
+                WeeklyReportCalculatorInput(
+                    report_date=request.report_date,
+                    file_ab_1=request.file_ab_1_bytes,
+                    file_ab_2=request.file_ab_2_bytes,
+                    file_cd_1=request.file_cd_1_bytes,
+                    file_cd_2=request.file_cd_2_bytes,
+                )
+            )
+
+            return ServiceResult.ok(ExtractResponse(records=records))
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("WeeklyReportService.extract_records 실패")
             return ServiceResult.fail(str(exc))
 
     # --------------------------------------------------

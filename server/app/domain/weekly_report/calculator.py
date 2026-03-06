@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from server.app.shared.base.calculator import BaseCalculator
 from server.app.shared.types import CalculatorInput, CalculatorOutput
 from server.app.core.config import settings
+from server.app.domain.weekly_report.schemas import WeeklyReportRecord
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,77 @@ class WeeklyReportCalculator(
             records = await self._refine_records_batch(records)
 
         return WeeklyReportCalculatorOutput(records=records)
+
+    async def extract(
+        self, input_data: WeeklyReportCalculatorInput
+    ) -> list[WeeklyReportRecord]:
+        """
+        Excel 파싱 → 필터링 → WeeklyReportRecord 리스트 반환 (Task 4-1).
+
+        Gemini 윤문(_refine_records_batch)을 호출하지 않아 즉시 응답이 가능하다.
+        기존 calculate()의 로직 1~4 전처리만 수행한다.
+
+        Args:
+            input_data: 파일 bytes 4개 + report_date
+
+        Returns:
+            list[WeeklyReportRecord]: 파싱·필터링된 레코드 목록 (원본 텍스트)
+        """
+        monday, friday = self._get_week_range(input_data.report_date)
+        df_ab, df_cd = self._consolidate_files(input_data)
+        self._validate_min_columns(df_ab, "AB")
+        self._validate_min_columns(df_cd, "CD")
+        df_filtered = self._filter_rows(df_ab, monday, friday)
+        return self._map_rows_to_weekly_records(df_filtered, df_cd)
+
+    def _map_rows_to_weekly_records(
+        self, df: pd.DataFrame, df_cd: pd.DataFrame
+    ) -> list[WeeklyReportRecord]:
+        """
+        필터링된 DataFrame을 WeeklyReportRecord 리스트로 변환한다 (Task 4-1).
+
+        기존 _map_records()와 달리 biz_system, biz_system2 필드를 포함하며
+        WeeklyReportRecord 스키마에 맞게 반환한다. Gemini 로직 없음.
+        """
+        records: list[WeeklyReportRecord] = []
+        for _, row in df.iterrows():
+            records.append(self._map_single_row_to_weekly_record(row, df_cd))
+        return records
+
+    def _map_single_row_to_weekly_record(
+        self, row: pd.Series, df_cd: pd.DataFrame
+    ) -> WeeklyReportRecord:
+        """단일 행을 WeeklyReportRecord로 변환한다 (Task 4-1)."""
+        request_id = self._to_str(row.iloc[COL_A])
+        schedule_opt = self._get_schedule(row)
+
+        return WeeklyReportRecord(
+            request_id=request_id,
+            company=self._to_str(row.iloc[COL_J]),
+            biz_system=self._to_str(row.iloc[COL_F]),
+            biz_system2=self._to_str(row.iloc[COL_W]),
+            category=self._get_category(row, df_cd, request_id),
+            status=self._get_status(row.iloc[COL_B]),
+            schedule=schedule_opt if schedule_opt is not None else "",
+            title_raw=self._to_str(row.iloc[COL_G]),
+            summary_raw=self._to_str(row.iloc[COL_H]),
+            content_raw=self._get_content_raw(row),
+        )
+
+    def _get_content_raw(self, row: pd.Series) -> Optional[str]:
+        """
+        T열 결측 여부에 따라 처리내용 원본 텍스트를 반환한다 (Task 4-1).
+
+        T열 NaN → P열에 값 있으면 R열, 없으면 None
+        T열 있음 → Z열에 값 있으면 AB열, 없으면 None
+        """
+        has_t = not pd.isna(row.iloc[COL_T])
+        if not has_t:
+            p_val = row.iloc[COL_P]
+            return self._to_str_or_none(row.iloc[COL_R]) if not pd.isna(p_val) else None
+        else:
+            z_val = row.iloc[COL_Z]
+            return self._to_str_or_none(row.iloc[COL_AB]) if not pd.isna(z_val) else None
 
     # --------------------------------------------------
     # 로직 1: 파일 통합
