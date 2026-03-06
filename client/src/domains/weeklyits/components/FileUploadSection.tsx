@@ -84,7 +84,7 @@ export const FileUploadSection: React.FC = () => {
         <div className="mb-3 flex items-center gap-2">
           <span className="inline-block h-2.5 w-2.5 rounded-full bg-blue-400" />
           <h3 className="text-sm font-bold text-blue-800">AB 파일</h3>
-          <span className="text-xs text-blue-500">(창원특수강 기준)</span>
+          <span className="text-xs text-blue-500">(ITS 실적 통합 데이터)</span>
         </div>
         <div className="flex flex-col gap-2.5">
           <FileSlot
@@ -109,7 +109,7 @@ export const FileUploadSection: React.FC = () => {
         <div className="mb-3 flex items-center gap-2">
           <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400" />
           <h3 className="text-sm font-bold text-emerald-800">CD 파일</h3>
-          <span className="text-xs text-emerald-500">(베스틸 기준)</span>
+          <span className="text-xs text-emerald-500">(CH 변경관리 참고 데이터)</span>
         </div>
         <div className="flex flex-col gap-2.5">
           <FileSlot
