@@ -142,6 +142,14 @@ class Settings(BaseSettings):
     )
 
     # ====================
+    # External API Settings
+    # ====================
+    GEMINI_API_KEY: str = Field(
+        default="",
+        description="Google Gemini API 키"
+    )
+
+    # ====================
     # Domain Plugin Settings
     # ====================
     # 여기에 도메인별 설정을 추가할 수 있습니다
