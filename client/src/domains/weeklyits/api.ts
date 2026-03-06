@@ -33,7 +33,10 @@ export async function generateWeeklyReport(
   const response = await apiClient.post<WeeklyReportApiResponse>(
     '/v1/weekly-report/generate',
     formData,
-    { headers: { 'Content-Type': 'multipart/form-data' } }
+    {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000, // Gemini API 배치 처리 대기 시간 확보 (120초)
+    }
   );
 
   return response.data.result_text;
