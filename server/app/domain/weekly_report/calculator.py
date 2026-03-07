@@ -57,6 +57,8 @@ COL_AB = 27 # 변경건 처리내용 (T열 있을 때)
 
 # 필수 컬럼 수: AB열(index 27)을 사용하므로 최소 28개 컬럼 필요
 MIN_REQUIRED_COLS = 28
+# CD 파일(CH 변경관리 이력) 필수 컬럼 수: D열(index 3) lookup만 사용하므로 14개로 충분
+MIN_REQUIRED_COLS_CD = 14
 
 # ====================
 # 비즈니스 규칙 상수

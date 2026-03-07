@@ -23,6 +23,7 @@ from server.app.shared.base.service import BaseService
 from server.app.shared.types import ServiceResult
 from server.app.domain.weekly_report.calculator import (
     MIN_REQUIRED_COLS,
+    MIN_REQUIRED_COLS_CD,
     WeeklyReportCalculator,
     WeeklyReportCalculatorInput,
 )
@@ -219,17 +220,19 @@ class WeeklyReportService(BaseService[WeeklyReportServiceInput, WeeklyReportResp
     def _validate_columns(self, request: WeeklyReportServiceInput) -> None:
         """
         각 파일을 pd.read_excel(header=2, nrows=0)로 읽어
-        필수 컬럼 수(MIN_REQUIRED_COLS) 이상인지 확인한다.
+        파일 유형별 필수 컬럼 수 이상인지 확인한다.
+        - AB 파일: MIN_REQUIRED_COLS (28) — AB열(index 27)까지 사용
+        - CD 파일: MIN_REQUIRED_COLS_CD (14) — D열(index 3) lookup만 사용
 
         nrows=0: 헤더 행만 읽어 성능 최소화
         """
         files = [
-            (request.file_ab_1_name, request.file_ab_1_bytes),
-            (request.file_ab_2_name, request.file_ab_2_bytes),
-            (request.file_cd_1_name, request.file_cd_1_bytes),
-            (request.file_cd_2_name, request.file_cd_2_bytes),
+            (request.file_ab_1_name, request.file_ab_1_bytes, MIN_REQUIRED_COLS),
+            (request.file_ab_2_name, request.file_ab_2_bytes, MIN_REQUIRED_COLS),
+            (request.file_cd_1_name, request.file_cd_1_bytes, MIN_REQUIRED_COLS_CD),
+            (request.file_cd_2_name, request.file_cd_2_bytes, MIN_REQUIRED_COLS_CD),
         ]
-        for name, file_bytes in files:
+        for name, file_bytes, min_cols in files:
             try:
                 df = pd.read_excel(
                     io.BytesIO(file_bytes),
@@ -246,16 +249,16 @@ class WeeklyReportService(BaseService[WeeklyReportServiceInput, WeeklyReportResp
                     detail=f"파일을 읽을 수 없습니다: '{name}'. ({exc})",
                 ) from exc
 
-            if len(df.columns) < MIN_REQUIRED_COLS:
+            if len(df.columns) < min_cols:
                 logger.error(
                     "[컬럼 검증 실패 - 컬럼 수 부족] 파일명: '%s' | 실제 컬럼 수: %d | 최소 요구: %d | 감지된 컬럼명: %s",
-                    name, len(df.columns), MIN_REQUIRED_COLS, df.columns.tolist(),
+                    name, len(df.columns), min_cols, df.columns.tolist(),
                 )
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"파일 '{name}'의 컬럼 수({len(df.columns)})가 "
-                        f"최소 요구 컬럼 수({MIN_REQUIRED_COLS})보다 적습니다. "
+                        f"최소 요구 컬럼 수({min_cols})보다 적습니다. "
                         "지정된 양식의 엑셀 파일을 사용해 주세요."
                     ),
                 )
