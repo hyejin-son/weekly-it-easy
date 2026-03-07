@@ -358,10 +358,11 @@ class WeeklyReportCalculator(
 
     def _get_content_raw(self, row: pd.Series) -> Optional[str]:
         """
-        T열 결측 여부에 따라 처리내용 원본 텍스트를 반환한다 (Task 4-1).
+        T열 결측 여부 및 B열(진행상태)에 따라 처리내용 원본 텍스트를 반환한다 (Task 4-1).
 
         T열 NaN → P열에 값 있으면 R열, 없으면 None
-        T열 있음 → Z열에 값 있으면 AB열, 없으면 None
+        T열 있음 + B열 '종료' 포함 → Z열에 값 있으면 R열 (R열 우선, 더 상세한 내용)
+        T열 있음 + B열 '종료' 미포함 → Z열에 값 있으면 AB열, 없으면 None
         """
         has_t = not pd.isna(row.iloc[COL_T])
         if not has_t:
@@ -369,7 +370,14 @@ class WeeklyReportCalculator(
             return self._to_str_or_none(row.iloc[COL_R]) if not pd.isna(p_val) else None
         else:
             z_val = row.iloc[COL_Z]
-            return self._to_str_or_none(row.iloc[COL_AB]) if not pd.isna(z_val) else None
+            b_val = row.iloc[COL_B]
+            status = str(b_val) if not pd.isna(b_val) else ""
+            is_closed = "종료" in status
+            if is_closed:
+                # 종료 상태: AB열보다 상세한 R열 우선 참조
+                return self._to_str_or_none(row.iloc[COL_R]) if not pd.isna(z_val) else None
+            else:
+                return self._to_str_or_none(row.iloc[COL_AB]) if not pd.isna(z_val) else None
 
     # --------------------------------------------------
     # 로직 1: 파일 통합
@@ -794,7 +802,8 @@ class WeeklyReportCalculator(
             "- [개요]: 비즈니스 배경·목적·기대효과 중심으로 간결하게 작성. "
             "원본의 구체적 수치, 메뉴명, 시스템명을 반드시 유지. 길이는 내용에 따라 자연스럽게 결정.\n"
             "- [내용]: 처리내용이 있으면 핵심 변경사항을 구조화하여 작성. "
-            "변경사항이 2개 이상이면 반드시 '1) ... 2) ... 3) ...' 번호 목록으로 나열. "
+            "변경사항이 여러 개로 명확히 나뉠 때만 1), 2), 3) 번호 목록으로 구조화하고, "
+            "단일 변경사항이거나 굳이 나눌 필요가 없는 경우에는 번호 없이 자연스러운 비즈니스 개조식 문장으로 작성할 것. "
             "각 항목에 수치·메뉴명·시스템명 등 구체적 정보를 포함. 처리내용이 없으면 빈 문자열.\n\n"
             f"입력 데이터 (JSON):\n{items_json}\n\n"
             "출력 형식 — 아래 JSON 배열만 출력하고 다른 텍스트는 포함하지 마세요:\n"
