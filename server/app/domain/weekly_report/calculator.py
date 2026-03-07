@@ -69,8 +69,9 @@ EPRO_VALUES: frozenset[str] = frozenset({
     "세아창원특수강>기타>e-Procurement",
 })
 
-STATUS_DONE: frozenset[str] = frozenset({"종료", "중단종료", "취소종료"})
-STATUS_WAIT: frozenset[str] = frozenset({"요청 접수 및 분류"})
+STATUS_EXCLUDE: frozenset[str] = frozenset({"취소종료", "중단종료"})
+STATUS_DONE: frozenset[str] = frozenset({"종료", "요청 처리확인", "요청처리승인"})
+STATUS_WAIT: frozenset[str] = frozenset({"SR사전검토", "SR사전검토승인", "요청 접수 및 분류"})
 
 CATEGORY_DEV_VALUE = "서비스요청 > 전산개발수정/신규 요청"
 CATEGORY_DEV = "개발/개선"
@@ -391,6 +392,9 @@ class WeeklyReportCalculator(
         e-Procurement 필터:
             F열(COL_F) 또는 W열(COL_W) 값이 EPRO_VALUES에 포함된 행만 추출
 
+        B열 제외 필터:
+            B열(COL_B) 값이 STATUS_EXCLUDE에 포함된 행("취소종료", "중단종료")은 제거
+
         날짜 필터:
             행별로 T열(COL_T) 결측 여부에 따라 날짜 기준 열 분기:
                 - T열 NaN → P열(COL_P) 기준
@@ -403,6 +407,10 @@ class WeeklyReportCalculator(
         col_w = df.iloc[:, COL_W]
         mask_epro = col_f.isin(EPRO_VALUES) | col_w.isin(EPRO_VALUES)
         df_epro = df[mask_epro].copy()
+
+        # B열 제외 필터: "취소종료", "중단종료" 행 제거
+        mask_b_exclude = ~df_epro.iloc[:, COL_B].astype(str).str.strip().isin(STATUS_EXCLUDE)
+        df_epro = df_epro[mask_b_exclude].copy()
 
         if df_epro.empty:
             return df_epro
@@ -480,9 +488,9 @@ class WeeklyReportCalculator(
         """
         B열 값을 진행상태 문자열로 변환한다.
 
-        '종료' / '중단종료' / '취소종료' → '완료'
-        '요청 접수 및 분류'              → '대기'
-        그 외                            → '진행중'
+        '종료' / '요청 처리확인' / '요청처리승인'           → '완료'
+        'SR사전검토' / 'SR사전검토승인' / '요청 접수 및 분류' → '대기'
+        그 외                                              → '진행중'
         """
         if pd.isna(b_value):
             return "진행중"
