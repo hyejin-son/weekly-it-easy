@@ -62,7 +62,7 @@ export const WeeklyItsPage: React.FC = () => {
 
   return (
     <MainLayout>
-      <div className="mx-auto max-w-3xl px-4 py-8">
+      <div className="mx-auto max-w-7xl px-4 py-8">
         {/* 페이지 헤더 */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-slate-900">주간보고 자동화</h1>

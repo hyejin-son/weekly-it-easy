@@ -19,6 +19,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 from datetime import date, timedelta
 from typing import Optional
 
@@ -70,8 +71,8 @@ EPRO_VALUES: frozenset[str] = frozenset({
 })
 
 STATUS_EXCLUDE: frozenset[str] = frozenset({"취소종료", "중단종료"})
-STATUS_DONE: frozenset[str] = frozenset({"종료", "요청 처리확인", "요청처리승인"})
-STATUS_WAIT: frozenset[str] = frozenset({"SR사전검토", "SR사전검토승인", "요청 접수 및 분류"})
+STATUS_DONE: frozenset[str] = frozenset({"종료", "요청처리확인", "요청처리승인"})
+STATUS_WAIT: frozenset[str] = frozenset({"SR사전검토", "SR사전검토승인", "요청접수및분류"})
 
 CATEGORY_DEV_VALUE = "서비스요청 > 전산개발수정/신규 요청"
 CATEGORY_DEV = "개발/개선"
@@ -409,7 +410,7 @@ class WeeklyReportCalculator(
         df_epro = df[mask_epro].copy()
 
         # B열 제외 필터: "취소종료", "중단종료" 행 제거
-        mask_b_exclude = ~df_epro.iloc[:, COL_B].astype(str).str.strip().isin(STATUS_EXCLUDE)
+        mask_b_exclude = ~df_epro.iloc[:, COL_B].astype(str).str.replace(r'\s+', '', regex=True).isin(STATUS_EXCLUDE)
         df_epro = df_epro[mask_b_exclude].copy()
 
         if df_epro.empty:
@@ -494,7 +495,7 @@ class WeeklyReportCalculator(
         """
         if pd.isna(b_value):
             return "진행중"
-        val = str(b_value).strip()
+        val = re.sub(r'\s+', '', str(b_value))
         if val in STATUS_DONE:
             return "완료"
         if val in STATUS_WAIT:
