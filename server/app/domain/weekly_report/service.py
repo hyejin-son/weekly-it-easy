@@ -204,6 +204,10 @@ class WeeklyReportService(BaseService[WeeklyReportServiceInput, WeeklyReportResp
         for name in file_names:
             ext = Path(name).suffix.lower()
             if ext not in VALID_EXTENSIONS:
+                logger.error(
+                    "[확장자 검증 실패] 파일명: '%s' | 감지된 확장자: '%s' | 허용 확장자: %s",
+                    name, ext, sorted(VALID_EXTENSIONS),
+                )
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -233,12 +237,20 @@ class WeeklyReportService(BaseService[WeeklyReportServiceInput, WeeklyReportResp
                     nrows=0,
                 )
             except Exception as exc:
+                logger.error(
+                    "[컬럼 검증 실패 - 파일 읽기 오류] 파일명: '%s' | 오류: %s",
+                    name, exc,
+                )
                 raise HTTPException(
                     status_code=400,
                     detail=f"파일을 읽을 수 없습니다: '{name}'. ({exc})",
                 ) from exc
 
             if len(df.columns) < MIN_REQUIRED_COLS:
+                logger.error(
+                    "[컬럼 검증 실패 - 컬럼 수 부족] 파일명: '%s' | 실제 컬럼 수: %d | 최소 요구: %d | 감지된 컬럼명: %s",
+                    name, len(df.columns), MIN_REQUIRED_COLS, df.columns.tolist(),
+                )
                 raise HTTPException(
                     status_code=400,
                     detail=(
