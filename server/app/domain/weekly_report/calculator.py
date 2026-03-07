@@ -320,14 +320,16 @@ class WeeklyReportCalculator(
 
         if not has_t:
             status = self._get_status(row.iloc[COL_B])
-            category = self._to_str(row.iloc[COL_C])
+            c_normalized = re.sub(r'\s+', '', self._to_str(row.iloc[COL_C]))
+            category = CATEGORY_DEV if any(kw in c_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
         else:
             change_id = self._to_str(row.iloc[COL_T])
             cd_row = self._lookup_cd_row(change_id, df_cd)
 
             if cd_row is None:
                 status = self._get_status(row.iloc[COL_B])
-                category = self._to_str(row.iloc[COL_C])
+                c_normalized = re.sub(r'\s+', '', self._to_str(row.iloc[COL_C]))
+                category = CATEGORY_DEV if any(kw in c_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
             else:
                 ch_status = self._get_ch_status(cd_row.iloc[COL_B])
                 if ch_status is None:
@@ -337,7 +339,7 @@ class WeeklyReportCalculator(
                 d_val = cd_row.iloc[COL_D]
                 if not pd.isna(d_val):
                     d_normalized = re.sub(r'\s+', '', str(d_val))
-                    category = CATEGORY_DEV if d_normalized in CH_CATEGORY_DEV_VALUES else CATEGORY_OPS
+                    category = CATEGORY_DEV if any(kw in d_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
                 else:
                     category = CATEGORY_OPS
 
@@ -529,7 +531,8 @@ class WeeklyReportCalculator(
 
         if not has_t:
             status = self._get_status(row.iloc[COL_B])
-            category = self._to_str(row.iloc[COL_C])
+            c_normalized = re.sub(r'\s+', '', self._to_str(row.iloc[COL_C]))
+            category = CATEGORY_DEV if any(kw in c_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
         else:
             change_id = self._to_str(row.iloc[COL_T])
             cd_row = self._lookup_cd_row(change_id, df_cd)
@@ -537,7 +540,8 @@ class WeeklyReportCalculator(
             if cd_row is None:
                 # Fallback: CD 미발견 → AB 파일 기준으로 처리
                 status = self._get_status(row.iloc[COL_B])
-                category = self._to_str(row.iloc[COL_C])
+                c_normalized = re.sub(r'\s+', '', self._to_str(row.iloc[COL_C]))
+                category = CATEGORY_DEV if any(kw in c_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
             else:
                 ch_status = self._get_ch_status(cd_row.iloc[COL_B])
                 if ch_status is None:
@@ -547,7 +551,7 @@ class WeeklyReportCalculator(
                 d_val = cd_row.iloc[COL_D]
                 if not pd.isna(d_val):
                     d_normalized = re.sub(r'\s+', '', str(d_val))
-                    category = CATEGORY_DEV if d_normalized in CH_CATEGORY_DEV_VALUES else CATEGORY_OPS
+                    category = CATEGORY_DEV if any(kw in d_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
                 else:
                     category = CATEGORY_OPS
 
@@ -665,12 +669,13 @@ class WeeklyReportCalculator(
 
     def _get_category(self, row: pd.Series) -> str:
         """
-        T열 없는 행 전용: C열(COL_C) 값을 그대로 반환한다.
+        T열 없는 행 전용: C열(COL_C) 값에서 띄어쓰기 제거 후 부분 일치로 구분을 결정한다.
 
         T열 있는 행의 구분 결정은 _map_single_row() / _map_single_row_to_weekly_record()
         내부에서 _lookup_cd_row() + CH_CATEGORY_DEV_VALUES 를 통해 직접 처리한다.
         """
-        return self._to_str(row.iloc[COL_C])
+        c_normalized = re.sub(r'\s+', '', self._to_str(row.iloc[COL_C]))
+        return CATEGORY_DEV if any(kw in c_normalized for kw in CH_CATEGORY_DEV_VALUES) else CATEGORY_OPS
 
     # --------------------------------------------------
     # 로직 4 헬퍼: 원본 텍스트 추출
