@@ -163,13 +163,13 @@ class WeeklyReportCalculator(
     """
 
     def __init__(self) -> None:
-        self._gemini_model = self._init_gemini()
+        self._gemini_client = self._init_gemini()
 
     def _init_gemini(self):
         """
-        Gemini 모델을 초기화하여 반환한다.
+        Gemini 클라이언트를 초기화하여 반환한다.
 
-        google.generativeai를 lazy import하여 패키지 미설치 환경에서도
+        google.genai를 lazy import하여 패키지 미설치 환경에서도
         Task 1-1 로직이 정상 동작하도록 한다.
         GEMINI_API_KEY가 없거나 초기화 실패 시 None을 반환한다.
         """
@@ -178,11 +178,10 @@ class WeeklyReportCalculator(
             logger.warning("GEMINI_API_KEY가 설정되지 않아 Gemini 윤문을 건너뜁니다.")
             return None
         try:
-            import google.generativeai as genai  # noqa: PLC0415
-            genai.configure(api_key=api_key)
-            return genai.GenerativeModel("gemini-1.5-flash")
+            from google import genai  # noqa: PLC0415
+            return genai.Client(api_key=api_key)
         except Exception as e:
-            logger.error(f"Gemini 모델 초기화 실패: {e}")
+            logger.error(f"Gemini 클라이언트 초기화 실패: {e}")
             return None
 
     async def calculate(
@@ -216,8 +215,8 @@ class WeeklyReportCalculator(
         # 로직 3+4: 매핑 (CD는 lookup 전용)
         records = self._map_records(df_filtered, df_cd)
 
-        # 로직 5: Gemini 비동기 윤문 (모델이 없거나 레코드가 없으면 건너뜀)
-        if self._gemini_model and records:
+        # 로직 5: Gemini 비동기 윤문 (클라이언트가 없거나 레코드가 없으면 건너뜀)
+        if self._gemini_client and records:
             records = await self._refine_records_batch(records)
 
         return WeeklyReportCalculatorOutput(records=records)
@@ -239,7 +238,7 @@ class WeeklyReportCalculator(
         """
         processed = [self._weekly_record_to_processed(r) for r in records]
 
-        if self._gemini_model and processed:
+        if self._gemini_client and processed:
             processed = await self._refine_records_batch(processed)
 
         return processed
@@ -810,7 +809,10 @@ class WeeklyReportCalculator(
         """
         for attempt in range(max_retries + 1):
             try:
-                response = await self._gemini_model.generate_content_async(prompt)
+                response = await self._gemini_client.aio.models.generate_content(
+                    model="gemini-2.0-flash-lite",
+                    contents=prompt,
+                )
                 return response.text
             except Exception as e:
                 if attempt < max_retries:
