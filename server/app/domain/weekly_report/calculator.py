@@ -74,9 +74,23 @@ STATUS_EXCLUDE: frozenset[str] = frozenset({"취소종료", "중단종료"})
 STATUS_DONE: frozenset[str] = frozenset({"종료", "요청처리확인", "요청처리승인"})
 STATUS_WAIT: frozenset[str] = frozenset({"SR사전검토", "SR사전검토승인", "요청접수및분류"})
 
-CATEGORY_DEV_VALUE = "서비스요청 > 전산개발수정/신규 요청"
+CATEGORY_DEV_VALUE = "서비스요청 > 전산개발수정/신규 요청"  # T열 없는 경우 레거시 참고용 (현재 미사용)
 CATEGORY_DEV = "개발/개선"
 CATEGORY_OPS = "프로젝트/운영"
+
+# CH 파일 전용 상수 — AB 파일 T열(변경 ID)이 존재하는 행에만 적용
+# 비교 시 띄어쓰기 제거(re.sub / str.replace) 로직 동일하게 적용
+CH_STATUS_EXCLUDE: frozenset[str] = frozenset({"기각종료", "중단종료"})
+CH_STATUS_DONE: frozenset[str] = frozenset({
+    "변경승인", "운영자확인", "요청자확인", "배포요청", "배포승인",
+    "배포담당자확인", "배포결과확인", "종료", "사후처리종료",
+})
+CH_STATUS_WAIT: frozenset[str] = frozenset({
+    "변경등록", "재등록", "변경사후등록", "변경사후재등록", "접수및검토",
+})
+CH_CATEGORY_DEV_VALUES: frozenset[str] = frozenset({
+    "전산개발신규요청", "전산개발수정요청",
+})
 
 
 # ====================
@@ -280,28 +294,61 @@ class WeeklyReportCalculator(
         """
         필터링된 DataFrame을 WeeklyReportRecord 리스트로 변환한다 (Task 4-1).
 
-        기존 _map_records()와 달리 biz_system, biz_system2 필드를 포함하며
-        WeeklyReportRecord 스키마에 맞게 반환한다. Gemini 로직 없음.
+        _map_single_row_to_weekly_record()가 None을 반환하는 행(CH_STATUS_EXCLUDE 해당)은 제외한다.
         """
-        records: list[WeeklyReportRecord] = []
-        for _, row in df.iterrows():
-            records.append(self._map_single_row_to_weekly_record(row, df_cd))
-        return records
+        return [
+            r
+            for r in (self._map_single_row_to_weekly_record(row, df_cd) for _, row in df.iterrows())
+            if r is not None
+        ]
 
     def _map_single_row_to_weekly_record(
         self, row: pd.Series, df_cd: pd.DataFrame
-    ) -> WeeklyReportRecord:
-        """단일 행을 WeeklyReportRecord로 변환한다 (Task 4-1)."""
-        request_id = self._to_str(row.iloc[COL_A])
-        schedule_opt = self._get_schedule(row)
+    ) -> Optional[WeeklyReportRecord]:
+        """
+        단일 행을 WeeklyReportRecord로 변환한다 (Task 4-1).
 
+        T열(변경 ID) 유무에 따라 상태·구분 결정 소스를 분기한다.
+        - T열 없음: AB 파일 B열(상태) / C열(구분) 기준
+        - T열 있음: CD 파일 조회(조인 키: AB.T == CD.A)
+            - CD 미발견: AB 파일 기준 Fallback + logger.warning
+            - CD 발견 + CH_STATUS_EXCLUDE: None 반환 → 해당 행 제외
+            - CD 발견 + 정상: CD B열(상태) / CD D열(구분) 기준
+        """
+        request_id = self._to_str(row.iloc[COL_A])
+        has_t = not pd.isna(row.iloc[COL_T])
+
+        if not has_t:
+            status = self._get_status(row.iloc[COL_B])
+            category = self._to_str(row.iloc[COL_C])
+        else:
+            change_id = self._to_str(row.iloc[COL_T])
+            cd_row = self._lookup_cd_row(change_id, df_cd)
+
+            if cd_row is None:
+                status = self._get_status(row.iloc[COL_B])
+                category = self._to_str(row.iloc[COL_C])
+            else:
+                ch_status = self._get_ch_status(cd_row.iloc[COL_B])
+                if ch_status is None:
+                    return None  # CH_STATUS_EXCLUDE → 행 전체 제외
+
+                status = ch_status
+                d_val = cd_row.iloc[COL_D]
+                if not pd.isna(d_val):
+                    d_normalized = re.sub(r'\s+', '', str(d_val))
+                    category = CATEGORY_DEV if d_normalized in CH_CATEGORY_DEV_VALUES else CATEGORY_OPS
+                else:
+                    category = CATEGORY_OPS
+
+        schedule_opt = self._get_schedule(row)
         return WeeklyReportRecord(
             request_id=request_id,
             company=self._to_str(row.iloc[COL_J]),
             biz_system=self._to_str(row.iloc[COL_F]),
             biz_system2=self._to_str(row.iloc[COL_W]),
-            category=self._get_category(row, df_cd, request_id),
-            status=self._get_status(row.iloc[COL_B]),
+            category=category,
+            status=status,
             schedule=schedule_opt if schedule_opt is not None else "",
             title_raw=self._to_str(row.iloc[COL_G]),
             summary_raw=self._to_str(row.iloc[COL_H]),
@@ -409,9 +456,13 @@ class WeeklyReportCalculator(
         mask_epro = col_f.isin(EPRO_VALUES) | col_w.isin(EPRO_VALUES)
         df_epro = df[mask_epro].copy()
 
-        # B열 제외 필터: "취소종료", "중단종료" 행 제거
-        mask_b_exclude = ~df_epro.iloc[:, COL_B].astype(str).str.replace(r'\s+', '', regex=True).isin(STATUS_EXCLUDE)
-        df_epro = df_epro[mask_b_exclude].copy()
+        # B열 제외 필터: T열이 없는 행(AB 기준)에만 적용.
+        # T열이 있는 행은 CD 파일의 B열 기준 CH_STATUS_EXCLUDE로 판단하므로 매핑 단계로 위임.
+        mask_t_is_nan = df_epro.iloc[:, COL_T].isna()
+        mask_ab_exclude = mask_t_is_nan & (
+            df_epro.iloc[:, COL_B].astype(str).str.replace(r'\s+', '', regex=True).isin(STATUS_EXCLUDE)
+        )
+        df_epro = df_epro[~mask_ab_exclude].copy()
 
         if df_epro.empty:
             return df_epro
@@ -452,21 +503,55 @@ class WeeklyReportCalculator(
         """
         필터링된 DataFrame을 ProcessedRecord 리스트로 변환한다.
 
-        df_cd는 T열이 있는 행의 구분(D열) 조회에만 사용된다.
+        _map_single_row()가 None을 반환하는 행(CH_STATUS_EXCLUDE 해당)은 결과에서 제외한다.
         """
-        records: list[ProcessedRecord] = []
-        for _, row in df.iterrows():
-            records.append(self._map_single_row(row, df_cd))
-        return records
+        return [
+            r
+            for r in (self._map_single_row(row, df_cd) for _, row in df.iterrows())
+            if r is not None
+        ]
 
     def _map_single_row(
         self, row: pd.Series, df_cd: pd.DataFrame
-    ) -> ProcessedRecord:
-        """단일 행을 ProcessedRecord로 변환한다."""
+    ) -> Optional[ProcessedRecord]:
+        """
+        단일 행을 ProcessedRecord로 변환한다.
+
+        T열(변경 ID) 유무에 따라 상태·구분 결정 소스를 분기한다.
+        - T열 없음: AB 파일 B열(상태) / C열(구분) 기준 (기존 로직)
+        - T열 있음: CD 파일 조회(조인 키: AB.T == CD.A)
+            - CD 미발견: AB 파일 기준 Fallback + logger.warning
+            - CD 발견 + CH_STATUS_EXCLUDE: None 반환 → 해당 행 제외
+            - CD 발견 + 정상: CD B열(상태) / CD D열(구분) 기준
+        """
         request_id = self._to_str(row.iloc[COL_A])
-        status = self._get_status(row.iloc[COL_B])
+        has_t = not pd.isna(row.iloc[COL_T])
+
+        if not has_t:
+            status = self._get_status(row.iloc[COL_B])
+            category = self._to_str(row.iloc[COL_C])
+        else:
+            change_id = self._to_str(row.iloc[COL_T])
+            cd_row = self._lookup_cd_row(change_id, df_cd)
+
+            if cd_row is None:
+                # Fallback: CD 미발견 → AB 파일 기준으로 처리
+                status = self._get_status(row.iloc[COL_B])
+                category = self._to_str(row.iloc[COL_C])
+            else:
+                ch_status = self._get_ch_status(cd_row.iloc[COL_B])
+                if ch_status is None:
+                    return None  # CH_STATUS_EXCLUDE(기각종료/중단종료) → 행 전체 제외
+
+                status = ch_status
+                d_val = cd_row.iloc[COL_D]
+                if not pd.isna(d_val):
+                    d_normalized = re.sub(r'\s+', '', str(d_val))
+                    category = CATEGORY_DEV if d_normalized in CH_CATEGORY_DEV_VALUES else CATEGORY_OPS
+                else:
+                    category = CATEGORY_OPS
+
         schedule = self._get_schedule(row)
-        category = self._get_category(row, df_cd, request_id)
         company = self._to_str(row.iloc[COL_J])
         title, requirements, processing_content = self._get_texts(row)
 
@@ -503,6 +588,56 @@ class WeeklyReportCalculator(
         return "진행중"
 
     # --------------------------------------------------
+    # 로직 3 헬퍼: CH 진행상태 매핑 (T열 있는 경우 전용)
+    # --------------------------------------------------
+
+    def _get_ch_status(self, b_value: object) -> Optional[str]:
+        """
+        CD 파일 B열 값을 CH 진행상태 문자열로 변환한다 (T열 있는 행 전용).
+
+        CH_STATUS_EXCLUDE(기각종료/중단종료) → None  (호출 측에서 해당 행 제외)
+        CH_STATUS_DONE                       → '완료'
+        CH_STATUS_WAIT                       → '대기'
+        그 외                                → '진행중'
+        """
+        if pd.isna(b_value):
+            return "진행중"
+        val = re.sub(r'\s+', '', str(b_value))
+        if val in CH_STATUS_EXCLUDE:
+            return None
+        if val in CH_STATUS_DONE:
+            return "완료"
+        if val in CH_STATUS_WAIT:
+            return "대기"
+        return "진행중"
+
+    # --------------------------------------------------
+    # 로직 3 헬퍼: CD 파일 행 조회 (조인 키: AB.T == CD.A)
+    # --------------------------------------------------
+
+    def _lookup_cd_row(
+        self, change_id: str, df_cd: pd.DataFrame
+    ) -> Optional[pd.Series]:
+        """
+        AB 파일 T열(변경 ID) 값으로 CD 파일 A열(CH ID)에서 매칭 행을 조회한다.
+
+        조인 키: AB.T == CD.A
+        CD 파일이 비어있거나 매칭 없으면 None 반환 + logger.warning 기록.
+        """
+        if df_cd.empty or change_id == "":
+            logger.warning(
+                f"변경 ID {change_id}를 CD 파일에서 찾을 수 없어 AB 파일 기준으로 폴백합니다"
+            )
+            return None
+        matched = df_cd[df_cd.iloc[:, COL_A] == change_id]
+        if matched.empty:
+            logger.warning(
+                f"변경 ID {change_id}를 CD 파일에서 찾을 수 없어 AB 파일 기준으로 폴백합니다"
+            )
+            return None
+        return matched.iloc[0]
+
+    # --------------------------------------------------
     # 로직 3 헬퍼: 일정 매핑
     # --------------------------------------------------
 
@@ -528,35 +663,14 @@ class WeeklyReportCalculator(
     # 로직 3 헬퍼: 구분 매핑
     # --------------------------------------------------
 
-    def _get_category(
-        self, row: pd.Series, df_cd: pd.DataFrame, request_id: str
-    ) -> str:
+    def _get_category(self, row: pd.Series) -> str:
         """
-        T열 결측 여부에 따라 구분을 결정한다.
+        T열 없는 행 전용: C열(COL_C) 값을 그대로 반환한다.
 
-        T열 NaN → C열(COL_C) 값 그대로 반환
-        T열 있음 → df_cd에서 A열 == request_id 인 행 찾기
-                   D열 값이 CATEGORY_DEV_VALUE이면 '개발/개선'
-                   그 외 또는 미발견이면 '프로젝트/운영'
+        T열 있는 행의 구분 결정은 _map_single_row() / _map_single_row_to_weekly_record()
+        내부에서 _lookup_cd_row() + CH_CATEGORY_DEV_VALUES 를 통해 직접 처리한다.
         """
-        has_t = not pd.isna(row.iloc[COL_T])
-
-        if not has_t:
-            return self._to_str(row.iloc[COL_C])
-
-        # CD 파일 lookup
-        if df_cd.empty:
-            return CATEGORY_OPS
-
-        cd_a_col = df_cd.iloc[:, COL_A]
-        matched = df_cd[cd_a_col == request_id]
-        if matched.empty:
-            return CATEGORY_OPS
-
-        d_val = matched.iloc[0].iloc[COL_D]
-        if not pd.isna(d_val) and str(d_val).strip() == CATEGORY_DEV_VALUE:
-            return CATEGORY_DEV
-        return CATEGORY_OPS
+        return self._to_str(row.iloc[COL_C])
 
     # --------------------------------------------------
     # 로직 4 헬퍼: 원본 텍스트 추출
