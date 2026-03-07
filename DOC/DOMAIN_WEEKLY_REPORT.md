@@ -197,7 +197,9 @@ Step 2 전용. 레코드 리스트를 받아 AI 윤문 후 반환. 파일 파싱
 
 **사전 검증 항목 (extract 단계에서 수행):**
 - 4개 파일 모두 `.xlsx` 또는 `.xls` 확장자 확인
-- `pd.read_excel(header=2)` 기준 필수 컬럼(A, B, F, G, H, J, P, W열) 존재 여부 확인
+- `pd.read_excel(header=2)` 기준 파일 유형별 최소 컬럼 수 확인:
+  - AB 파일 (ITS 서비스/변경 이력): 최소 **28개** — AB열(index 27)까지 사용 (`MIN_REQUIRED_COLS = 28`)
+  - CD 파일 (CH 변경관리 이력): 최소 **14개** — D열(index 3) lookup만 사용 (`MIN_REQUIRED_COLS_CD = 14`)
 - 검증 실패 시 `HTTPException(status_code=400)` + `"양식에 맞지 않는 엑셀 파일입니다"` 메시지
 
 ---
