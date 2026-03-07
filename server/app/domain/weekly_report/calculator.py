@@ -191,8 +191,8 @@ class WeeklyReportCalculator(
         df_ab, df_cd = self._consolidate_files(input_data)
 
         # 컬럼 수 검증
-        self._validate_min_columns(df_ab, "AB")
-        self._validate_min_columns(df_cd, "CD")
+        self._validate_min_columns(df_ab, "AB", MIN_REQUIRED_COLS)
+        self._validate_min_columns(df_cd, "CD", MIN_REQUIRED_COLS_CD)
 
         # 로직 2: 필터링 (AB 파일만 대상)
         df_filtered = self._filter_rows(df_ab, monday, friday)
@@ -267,8 +267,8 @@ class WeeklyReportCalculator(
         """
         monday, friday = self._get_week_range(input_data.report_date)
         df_ab, df_cd = self._consolidate_files(input_data)
-        self._validate_min_columns(df_ab, "AB")
-        self._validate_min_columns(df_cd, "CD")
+        self._validate_min_columns(df_ab, "AB", MIN_REQUIRED_COLS)
+        self._validate_min_columns(df_cd, "CD", MIN_REQUIRED_COLS_CD)
         df_filtered = self._filter_rows(df_ab, monday, friday)
         return self._map_rows_to_weekly_records(df_filtered, df_cd)
 
@@ -743,16 +743,16 @@ class WeeklyReportCalculator(
         return stripped if stripped else None
 
     @staticmethod
-    def _validate_min_columns(df: pd.DataFrame, label: str) -> None:
+    def _validate_min_columns(df: pd.DataFrame, label: str, min_cols: int) -> None:
         """
-        DataFrame이 MIN_REQUIRED_COLS(28) 이상의 컬럼을 보유하는지 검증한다.
+        DataFrame이 min_cols 이상의 컬럼을 보유하는지 검증한다.
 
         Raises:
             ValueError: 컬럼 수가 부족한 경우
         """
-        if len(df.columns) < MIN_REQUIRED_COLS:
+        if len(df.columns) < min_cols:
             raise ValueError(
                 f"{label} 파일의 컬럼 수가 부족합니다. "
-                f"최소 {MIN_REQUIRED_COLS}개 필요, 현재 {len(df.columns)}개. "
+                f"최소 {min_cols}개 필요, 현재 {len(df.columns)}개. "
                 "올바른 양식의 Excel 파일을 업로드해 주세요."
             )
