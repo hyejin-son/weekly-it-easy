@@ -34,7 +34,7 @@ pandas==2.2.2
 openpyxl==3.1.2
 
 # AI / Gemini API
-google-generativeai>=0.8.0
+google-genai>=1.0.0
 
 # 개발 도구
 # ============
