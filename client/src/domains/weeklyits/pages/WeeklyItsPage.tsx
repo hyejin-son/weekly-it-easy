@@ -65,7 +65,7 @@ export const WeeklyItsPage: React.FC = () => {
       <div className="mx-auto max-w-7xl px-4 py-8">
         {/* 페이지 헤더 */}
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-slate-900">주간보고 자동화</h1>
+          <h1 className="text-2xl font-bold text-slate-900">주간보고 자동화v1.0</h1>
           <p className="mt-1 text-sm text-slate-500">
             날짜와 엑셀 파일 4개를 업로드하여 데이터를 추출한 후, AI 윤문으로 주간보고 텍스트를 생성합니다.
           </p>
